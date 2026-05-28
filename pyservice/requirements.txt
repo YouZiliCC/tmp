@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+pydantic
+python-docx
+pandas
+chardet
+httpx
+openai
+sentence-transformers
+numpy
+scikit-learn

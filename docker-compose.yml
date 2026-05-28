@@ -1,0 +1,88 @@
+version: "3.9"
+
+services:
+  pyservice:
+    build:
+      context: .
+      dockerfile: pyservice/Dockerfile
+    image: xcjdev/pyservice:latest
+    container_name: xcjdev-pyservice
+    environment:
+      - PY_PORT=8001
+      - DB_PATH=/data/papers.db
+      - EMBED_BACKEND=${EMBED_BACKEND:-local}
+      - EMBED_MODEL=${EMBED_MODEL:-BAAI/bge-small-zh-v1.5}
+      - LLM_API_KEY=${LLM_API_KEY:-602ff18b-1166-4e51-bb42-82d9556d47f8}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
+      - LLM_MODEL=${LLM_MODEL:-deepseek-v3-2-251201}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.2}
+    volumes:
+      - ./data/storage:/data
+      - ./data/word:/data-source/word:ro
+      - ./data/WanFangdata.csv:/data-source/WanFangdata.csv:ro
+      - hf_cache:/root/.cache/huggingface
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD","curl","-fsS","http://localhost:8001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: xcjdev/backend:latest
+    container_name: xcjdev-backend
+    environment:
+      - API_ADDR=:8080
+      - DB_DRIVER=sqlite
+      - DB_DSN=/data/papers.db
+      - PY_SERVICE_URL=http://pyservice:8001
+      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:8080}
+      - LLM_MODEL=${LLM_MODEL:-deepseek-v3-2-251201}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.2}
+    volumes:
+      - ./data/storage:/data
+    ports:
+      - "8080:8080"
+    depends_on:
+      pyservice:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    image: xcjdev/frontend:latest
+    container_name: xcjdev-frontend
+    ports:
+      - "8088:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # 一次性容器：用于运行数据摄取
+  ingest:
+    image: xcjdev/pyservice:latest
+    profiles: ["ingest"]
+    container_name: xcjdev-ingest
+    environment:
+      - DB_PATH=/data/papers.db
+      - EMBED_BACKEND=${EMBED_BACKEND:-local}
+      - EMBED_MODEL=${EMBED_MODEL:-BAAI/bge-small-zh-v1.5}
+      - LLM_API_KEY=${LLM_API_KEY:-602ff18b-1166-4e51-bb42-82d9556d47f8}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
+    volumes:
+      - ./data/storage:/data
+      - ./data/word:/data-source/word:ro
+      - ./data/WanFangdata.csv:/data-source/WanFangdata.csv:ro
+      - hf_cache:/root/.cache/huggingface
+    entrypoint: ["python","-m","pyservice.ingest","--data-dir","/data-source","--db","/data/papers.db"]
+    depends_on: []
+
+volumes:
+  hf_cache: {}
