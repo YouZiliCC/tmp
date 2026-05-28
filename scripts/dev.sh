@@ -98,15 +98,27 @@ if ! command -v setsid >/dev/null 2>&1; then
 fi
 
 # ---------- 准备 Python venv ----------
+# 优先使用 uv（更快，无需 python3-venv apt 包）；没装时回退到 stdlib venv + pip。
 ensure_venv() {
   if [[ ! -d .venv ]]; then
     echo "[dev] 未发现 .venv，正在创建虚拟环境..."
-    python3 -m venv .venv
+    if command -v uv >/dev/null 2>&1; then
+      uv venv .venv
+    else
+      python3 -m venv .venv
+    fi
   fi
-  if [[ -f pyservice/requirements.txt ]]; then
-    echo "[dev] 安装/更新 pyservice/requirements.txt 依赖..."
-    .venv/bin/pip install --upgrade pip >/dev/null 2>&1 || true
-    .venv/bin/pip install -r pyservice/requirements.txt
+  # 已经装过 uvicorn（最关键的运行时入口）就跳过重新装包，避免反复拉 sentence-transformers / torch。
+  if [[ -f pyservice/requirements.txt && ! -x .venv/bin/uvicorn ]]; then
+    echo "[dev] 首次安装 pyservice/requirements.txt 依赖..."
+    if command -v uv >/dev/null 2>&1; then
+      uv pip install --python .venv/bin/python -r pyservice/requirements.txt
+    else
+      .venv/bin/pip install --upgrade pip >/dev/null 2>&1 || true
+      .venv/bin/pip install -r pyservice/requirements.txt
+    fi
+  else
+    echo "[dev] .venv 依赖已就绪，跳过安装（rm -rf .venv 可强制重装）"
   fi
 }
 

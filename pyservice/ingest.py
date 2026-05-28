@@ -20,8 +20,8 @@ from . import vector_codec
 from .parser import parse_docx, sliding_chunks
 from .tokenize_cn import tokenize_join
 
-DEFAULT_DB = "/Users/deeryou/xcj-dev/data/storage/papers.db"
-DEFAULT_DATA_DIR = "/Users/deeryou/xcj-dev/data"
+DEFAULT_DB = "./data/storage/papers.db"
+DEFAULT_DATA_DIR = "./data"
 
 
 _PUNCT_RE = re.compile(r"[\s　_\-—_·•．\.,，。:：;；!！\?？“”\"'‘’()（）\[\]【】《》<>/\\|]+")

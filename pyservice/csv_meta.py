@@ -75,7 +75,9 @@ def load_metadata(csv_path: str):
     enc = _detect_encoding(csv_path)
     last_err: Optional[Exception] = None
     df = None
-    for candidate in (enc, "gbk", "gb18030", "utf-8-sig", "utf-8"):
+    # 万方导出 CSV 实测 100% 是 GBK；chardet 探测对部分 GBK 文件会误判为 GB2312/Windows-1252/Latin-1。
+    # 因此优先 GB18030（GBK 超集）→ GBK，最后才回退到 chardet 探测结果与 UTF-8。
+    for candidate in ("gb18030", "gbk", enc, "utf-8-sig", "utf-8"):
         if not candidate:
             continue
         try:

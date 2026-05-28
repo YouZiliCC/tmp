@@ -1,7 +1,9 @@
 .env
 .env.local
-data/storage/*.db
-data/storage/*.db-*
+**/papers.db
+**/papers.db-*
+data/storage/
+backend/data/
 node_modules/
 frontend/dist/
 backend/bin/

@@ -31,15 +31,23 @@ export LLM_TEMPERATURE="${LLM_TEMPERATURE:-0.2}"
 export EMBED_BACKEND="${EMBED_BACKEND:-local}"
 export EMBED_MODEL="${EMBED_MODEL:-BAAI/bge-small-zh-v1.5}"
 
-# ---------- 确保 venv ----------
+# ---------- 确保 venv（优先 uv，回退 stdlib venv） ----------
 if [[ ! -d .venv ]]; then
   echo "[ingest] 未发现 .venv，正在创建虚拟环境..."
-  python3 -m venv .venv
+  if command -v uv >/dev/null 2>&1; then
+    uv venv .venv
+  else
+    python3 -m venv .venv
+  fi
 fi
-if [[ -f pyservice/requirements.txt ]]; then
-  echo "[ingest] 同步 pyservice/requirements.txt 依赖..."
-  .venv/bin/pip install --upgrade pip >/dev/null 2>&1 || true
-  .venv/bin/pip install -r pyservice/requirements.txt
+if [[ -f pyservice/requirements.txt && ! -x .venv/bin/uvicorn ]]; then
+  echo "[ingest] 首次安装 pyservice/requirements.txt 依赖..."
+  if command -v uv >/dev/null 2>&1; then
+    uv pip install --python .venv/bin/python -r pyservice/requirements.txt
+  else
+    .venv/bin/pip install --upgrade pip >/dev/null 2>&1 || true
+    .venv/bin/pip install -r pyservice/requirements.txt
+  fi
 fi
 
 mkdir -p data/storage
