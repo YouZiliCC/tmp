@@ -2,6 +2,9 @@
 .env.local
 **/papers.db
 **/papers.db-*
+# 数据集体量大（上千篇 docx 全文 + CSV），不入 git，改用 scp 分发到部署机
+data/word/
+data/*.csv
 data/storage/
 backend/data/
 node_modules/
