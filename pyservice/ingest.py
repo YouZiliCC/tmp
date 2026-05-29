@@ -185,7 +185,13 @@ def _iter_docx(data_dir: Path) -> List[Path]:
     if not word_dir.exists():
         # 兜底：当前目录直接含 .docx
         word_dir = data_dir
-    files = sorted(p for p in word_dir.glob("*.docx") if not p.name.startswith("~$"))
+    # 过滤 Word 临时锁文件（~$）与 macOS AppleDouble 伴随文件（._foo.docx）；
+    # 后者在 macOS 上用 tar/scp 传输时常被一并带出，并非有效的 docx 包。
+    files = sorted(
+        p
+        for p in word_dir.glob("*.docx")
+        if not p.name.startswith("~$") and not p.name.startswith("._")
+    )
     return files
 
 
