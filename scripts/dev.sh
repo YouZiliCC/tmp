@@ -3,6 +3,11 @@ set -e
 
 # scripts/dev.sh - 一键启动开发环境（Python 侧车 + Go 后端 + Vite 前端）
 #
+# 工具链约定:
+#   - Python: 用 uv 管理虚拟环境与依赖（未装 uv 时回退 stdlib venv + pip）
+#   - Node:   用 fnm 管理版本（读 frontend/.nvmrc，默认 22；未装 fnm 时直接用 PATH 里的 npm）
+#   - Go:     原生 go（>=1.22），无需额外版本管理
+#
 # 用法:
 #   bash scripts/dev.sh                # 启动三件套
 #   bash scripts/dev.sh --no-frontend  # 跳过前端
@@ -144,8 +149,26 @@ if [[ $WITH_BACKEND -eq 1 ]]; then
   PIDS+=($!)
 fi
 
+# ---------- 准备 Node（优先 fnm，回退 PATH 里的 npm）----------
+# 检测到 fnm 时：激活 fnm 环境并按 frontend/.nvmrc（默认 22）安装/切换 Node 版本。
+# 没有 fnm 时：直接用 PATH 中现有的 node/npm。
+ensure_node() {
+  if command -v fnm >/dev/null 2>&1; then
+    echo "[dev] 检测到 fnm，激活 Node 版本管理..."
+    eval "$(fnm env)"
+    (
+      cd frontend
+      # 读 .nvmrc（若无则用默认 22）并自动安装缺失版本
+      fnm use --install-if-missing
+    )
+  else
+    echo "[dev] 未检测到 fnm，使用 PATH 中的 node/npm"
+  fi
+}
+
 # ---------- 启动前端 ----------
 if [[ $WITH_FRONTEND -eq 1 ]]; then
+  ensure_node
   echo "[dev] 准备前端依赖 (npm install)..."
   (
     cd frontend

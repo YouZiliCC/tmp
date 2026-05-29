@@ -3,6 +3,11 @@ set -e
 
 # scripts/ingest.sh - 数据摄取入口
 #
+# 工具链约定:
+#   - Python: 用 uv 管理虚拟环境与依赖（未装 uv 时回退 stdlib venv + pip）
+#   - 嵌入:   默认本地 sentence-transformers（BAAI/bge-small-zh-v1.5）
+#   - LLM:    火山方舟（Volces Ark）DeepSeek，OpenAI 兼容协议
+#
 # 调用 pyservice.ingest 模块，把 data/ 下的 CSV + docx 解析入库，并尝试
 # 触发后端的 /api/reload 接口热重载索引。
 #

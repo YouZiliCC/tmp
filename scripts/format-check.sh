@@ -3,6 +3,11 @@ set -e
 
 # scripts/format-check.sh - 格式 / 静态检查
 #
+# 工具链约定:
+#   - Python: 优先使用 uv 创建的 .venv（无则回退系统 python3）
+#   - Node:   优先用 fnm（读 frontend/.nvmrc，默认 22）；未装时用 PATH 里的 npx
+#   - Go:     原生 go（>=1.22）
+#
 # 不会因为单一检查失败而立即退出，所有检查都会执行完毕，
 # 最后给出一个汇总（非零项数）。
 
@@ -49,8 +54,14 @@ fi
 
 # ---------- Frontend TS ----------
 section "frontend tsc --noEmit"
+if command -v fnm >/dev/null 2>&1; then
+  eval "$(fnm env)"
+fi
 (
   cd frontend
+  if command -v fnm >/dev/null 2>&1; then
+    fnm use --install-if-missing >/dev/null 2>&1 || true
+  fi
   if [[ ! -d node_modules ]]; then
     echo "[check] 未安装前端依赖，跳过 tsc。请先 npm install"
   else
