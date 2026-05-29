@@ -1,96 +1,56 @@
 import { Link } from "react-router-dom";
 import type { Hit } from "../api/types";
-import { firstAuthorEtAl, padOrdinal } from "../lib/format";
-import Chip from "./Chip";
-import ExpandableText from "./ExpandableText";
+import { firstAuthorEtAl, splitKeywords } from "../lib/format";
+import MatchChips from "./MatchChips";
 import ScoreBar from "./ScoreBar";
-import Checkbox from "./Checkbox";
 
-interface ResultRowProps {
+interface Props {
   hit: Hit;
   index: number;
-  selectable?: boolean;
-  selected?: boolean;
-  onToggle?: (next: boolean) => void;
   scoreMax?: number;
-  className?: string;
 }
 
-export default function ResultRow({
-  hit,
-  index,
-  selectable,
-  selected,
-  onToggle,
-  scoreMax = 1,
-  className = "",
-}: ResultRowProps) {
+/** A single search result row, links to /paper/:id. */
+export default function ResultRow({ hit, index, scoreMax = 1 }: Props) {
+  const kws = splitKeywords(hit.keywords).slice(0, 5);
   return (
-    <article className={`j-row grid gap-x-6 items-start ${className}`}
-             style={{ gridTemplateColumns: "78px 1fr 200px" }}>
-      {/* 序号 */}
-      <div className="pt-1 flex items-start gap-2">
-        {selectable && (
-          <Checkbox
-            checked={!!selected}
-            onChange={(v) => onToggle?.(v)}
-          />
-        )}
-        <span className="font-mono text-[0.86rem] text-ink-3 tnum tracking-wider">
-          {padOrdinal(index + 1, 4)}
+    <Link
+      to={`/paper/${encodeURIComponent(hit.paper_id)}`}
+      className="term-panel term-panel-hover block px-4 py-3.5 group"
+    >
+      <div className="flex items-start gap-3">
+        <span className="mono text-text-3 text-sm tnum pt-0.5 select-none">
+          {String(index).padStart(2, "0")}
         </span>
-      </div>
-
-      {/* 主体 */}
-      <div>
-        <Link
-          to={`/paper/${encodeURIComponent(hit.paper_id)}`}
-          className="font-display text-[1.32rem] leading-[1.22] text-ink-dark hover-uline"
-          style={{ fontVariationSettings: '"opsz" 72' }}
-        >
-          {hit.title}
-        </Link>
-        <div className="mt-1.5 font-mono text-[0.74rem] tracking-wider text-ink-3 uppercase tnum">
-          <span>{hit.year}</span>
-          <span className="mx-2">·</span>
-          <span className="normal-case font-serif text-ink-2 italic">
-            {hit.journal}
-          </span>
-          <span className="mx-2">·</span>
-          <span className="normal-case">{firstAuthorEtAl(hit.author)}</span>
-        </div>
-        <div className="mt-3">
-          <ExpandableText text={hit.abstract_preview ?? ""} limit={200} />
-        </div>
-        {((hit.matched_fields?.length ?? 0) > 0 || (hit.keywords ?? "").length > 0) ? (
-          <div className="mt-3 flex flex-wrap gap-1.5 items-center">
-            {hit.matched_fields?.map((f) => (
-              <Chip key={`m-${f}`} tone="accent" title="命中字段">
-                {f}
-              </Chip>
-            ))}
-            {(hit.keywords ?? "")
-              .split(/[,;，；、\s]+/)
-              .map((k) => k.trim())
-              .filter(Boolean)
-              .slice(0, 5)
-              .map((k) => (
-                <Chip key={`k-${k}`}>{k}</Chip>
-              ))}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-start justify-between gap-4">
+            <h3 className="font-display font-medium text-text leading-snug group-hover:text-cyan transition-colors">
+              {hit.title}
+            </h3>
+            <ScoreBar score={hit.score} max={scoreMax} />
           </div>
-        ) : null}
-      </div>
-
-      {/* 右侧 score */}
-      <div className="pt-2 flex flex-col items-end gap-2">
-        <div className="font-mono text-[0.62rem] uppercase tracking-[0.18em] text-ink-3">
-          Rank
-          <span className="ml-2 text-vermillion tnum">
-            #{String(hit.rank ?? index + 1).padStart(2, "0")}
-          </span>
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-2">
+            <span>{firstAuthorEtAl(hit.author)}</span>
+            <span className="text-text-3">//</span>
+            <span className="mono text-text-2">{hit.journal || "—"}</span>
+            <span className="text-text-3">//</span>
+            <span className="mono tnum text-amber">{hit.year || "—"}</span>
+          </div>
+          {hit.abstract_preview ? (
+            <p className="mt-2 text-[13px] leading-relaxed text-text-2 line-clamp-2">
+              {hit.abstract_preview}
+            </p>
+          ) : null}
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <MatchChips fields={hit.matched_fields} />
+            {kws.map((k) => (
+              <span key={k} className="chip">
+                {k}
+              </span>
+            ))}
+          </div>
         </div>
-        <ScoreBar score={hit.score ?? 0} max={scoreMax} width={140} />
       </div>
-    </article>
+    </Link>
   );
 }

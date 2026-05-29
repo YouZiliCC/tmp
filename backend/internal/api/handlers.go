@@ -374,25 +374,20 @@ func (h *Handlers) applyFilterConditions(fc map[string]any) (map[string]bool, []
 	return m, ids, false
 }
 
-func (h *Handlers) SearchSmart(w http.ResponseWriter, r *http.Request) {
-	var req smartRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json: "+err.Error())
-		return
-	}
-	q := strings.TrimSpace(req.Q)
-	if q == "" {
-		writeError(w, http.StatusBadRequest, "q is empty")
-		return
-	}
-	idx, chunks, papers := h.snapshot()
-	if idx == nil {
-		writeError(w, http.StatusServiceUnavailable, "index not ready")
-		return
-	}
+// smartRetrieval 是一次智能检索（rewrite→BM25∪向量→RRF）的产物。
+type smartRetrieval struct {
+	Golden     []search.Hit
+	ListBM25   []search.Hit
+	ListVector []search.Hit
+	Rewrite    *pyclient.RewriteResult
+}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
-	defer cancel()
+// runSmartRetrieval 复用 SearchSmart 的"rewrite→BM25∪向量→RRF 得 golden"逻辑，供 smart/qa/review-auto 复用。
+func (h *Handlers) runSmartRetrieval(ctx context.Context, q string) (*smartRetrieval, error) {
+	idx, chunks, _ := h.snapshot()
+	if idx == nil {
+		return nil, fmt.Errorf("index not ready")
+	}
 
 	rewrite, err := h.Py.Rewrite(ctx, q)
 	if err != nil {
@@ -441,9 +436,33 @@ func (h *Handlers) SearchSmart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	golden := search.RRF(listA, listB, 60, 50)
+	return &smartRetrieval{Golden: golden, ListBM25: listA, ListVector: listB, Rewrite: rewrite}, nil
+}
+
+func (h *Handlers) SearchSmart(w http.ResponseWriter, r *http.Request) {
+	var req smartRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+	q := strings.TrimSpace(req.Q)
+	if q == "" {
+		writeError(w, http.StatusBadRequest, "q is empty")
+		return
+	}
+	_, _, papers := h.snapshot()
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+
+	res, err := h.runSmartRetrieval(ctx, q)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
 
 	// 写历史
-	filtersJSON, _ := json.Marshal(map[string]any{"rewrite": rewrite != nil})
+	filtersJSON, _ := json.Marshal(map[string]any{"rewrite": res.Rewrite != nil})
 	if err := h.DB.AddHistory("smart", q, string(filtersJSON)); err != nil {
 		log.Printf("[history] add: %v", err)
 	}
@@ -456,10 +475,10 @@ func (h *Handlers) SearchSmart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"golden":      h.toHitViews(golden, papers),
-		"rewrite":     rewrite,
-		"list_bm25":   h.toHitViews(trim(listA, 50), papers),
-		"list_vector": h.toHitViews(trim(listB, 50), papers),
+		"golden":      h.toHitViews(res.Golden, papers),
+		"rewrite":     res.Rewrite,
+		"list_bm25":   h.toHitViews(trim(res.ListBM25, 50), papers),
+		"list_vector": h.toHitViews(trim(res.ListVector, 50), papers),
 	})
 }
 
@@ -468,28 +487,17 @@ type generateRequest struct {
 	PaperIDs []string `json:"paper_ids"`
 }
 
-func (h *Handlers) AnalyzeGenerate(w http.ResponseWriter, r *http.Request) {
-	var req generateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json: "+err.Error())
-		return
-	}
-	if strings.TrimSpace(req.Q) == "" || len(req.PaperIDs) == 0 {
-		writeError(w, http.StatusBadRequest, "q and paper_ids required")
-		return
-	}
-	ids := req.PaperIDs
-	if len(ids) > 5 {
-		ids = ids[:5]
+// buildGeneratePapers 按 paper_ids 取每篇最高分 chunk 组装 GeneratePaper。
+// 用 q 的嵌入向量挑最相关 chunk；若 Python 嵌入不可用则优雅降级为最长 chunk。
+// topN<=0 表示不截断。
+func (h *Handlers) buildGeneratePapers(ctx context.Context, q string, paperIDs []string, topN int) []pyclient.GeneratePaper {
+	ids := paperIDs
+	if topN > 0 && len(ids) > topN {
+		ids = ids[:topN]
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
-	defer cancel()
-
-	// embed 用来为每篇论文挑最相关的 chunk。若 Python 嵌入不可用，
-	// 优雅降级为：选择该论文最长的 chunk（信息量更高），relevance 用 0。
 	var qVec []float32
-	vecs, err := h.Py.Embed(ctx, []string{req.Q})
+	vecs, err := h.Py.Embed(ctx, []string{q})
 	if err != nil {
 		log.Printf("[generate] embed unavailable, fallback to length-based chunk: %v", err)
 	} else if len(vecs) > 0 {
@@ -540,13 +548,11 @@ func (h *Handlers) AnalyzeGenerate(w http.ResponseWriter, r *http.Request) {
 			RelevanceScore:     bestScore,
 		})
 	}
+	return genPapers
+}
 
-	resp, err := h.Py.Generate(ctx, pyclient.GenerateRequest{Query: req.Q, Papers: genPapers})
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "generate: "+err.Error())
-		return
-	}
-
+// citationsFromGenPapers 把 GeneratePaper 数组组装成 citations（同 /analyze/generate）。
+func citationsFromGenPapers(genPapers []pyclient.GeneratePaper) []map[string]any {
 	citations := make([]map[string]any, 0, len(genPapers))
 	for _, p := range genPapers {
 		citations = append(citations, map[string]any{
@@ -561,11 +567,35 @@ func (h *Handlers) AnalyzeGenerate(w http.ResponseWriter, r *http.Request) {
 			"top_chunk_text":  p.TopChunkText,
 		})
 	}
+	return citations
+}
+
+func (h *Handlers) AnalyzeGenerate(w http.ResponseWriter, r *http.Request) {
+	var req generateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Q) == "" || len(req.PaperIDs) == 0 {
+		writeError(w, http.StatusBadRequest, "q and paper_ids required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+
+	genPapers := h.buildGeneratePapers(ctx, req.Q, req.PaperIDs, 5)
+
+	resp, err := h.Py.Generate(ctx, pyclient.GenerateRequest{Query: req.Q, Papers: genPapers})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "generate: "+err.Error())
+		return
+	}
 
 	out := map[string]any{
 		"answer":       resp.Answer,
 		"py_citations": resp.Citations,
-		"citations":    citations,
+		"citations":    citationsFromGenPapers(genPapers),
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -618,6 +648,7 @@ func (h *Handlers) GetPaper(w http.ResponseWriter, r *http.Request) {
 		"abstract":             p.Abstract,
 		"source_journal":       p.SourceJournal,
 		"research_design_text": p.ResearchDesignText,
+		"full_text":            p.RawBody,
 		"chunks":               cvs,
 	})
 }
@@ -716,6 +747,422 @@ func (h *Handlers) AnalyzeRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// --- T4/T3/T5 学术智能体 ---
+
+type qaFilters struct {
+	PublishYear int    `json:"publish_year"`
+	Author      string `json:"author"`
+	Journal     string `json:"journal"`
+}
+
+type qaRequest struct {
+	Question string     `json:"question"`
+	Filters  *qaFilters `json:"filters"`
+}
+
+// matchedBy 依据该 paper 是否出现在 BM25 / 向量列表中判定命中方式。
+func matchedBy(paperID string, inBM25, inVector map[string]bool) string {
+	kw := inBM25[paperID]
+	sem := inVector[paperID]
+	switch {
+	case kw && sem:
+		return "关键词+语义"
+	case sem:
+		return "语义"
+	case kw:
+		return "关键词"
+	default:
+		return "关键词"
+	}
+}
+
+func idSet(hits []search.Hit) map[string]bool {
+	m := make(map[string]bool, len(hits))
+	for _, h := range hits {
+		m[h.PaperID] = true
+	}
+	return m
+}
+
+func (h *Handlers) QAAnswer(w http.ResponseWriter, r *http.Request) {
+	var req qaRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+	q := strings.TrimSpace(req.Question)
+	if q == "" {
+		writeError(w, http.StatusBadRequest, "question is empty")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+
+	res, err := h.runSmartRetrieval(ctx, q)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	hits := res.Golden
+
+	// 证据选择：默认 Top5；若候选 < 5 或第 3 名后断崖，则取 Top3 且 evidence_sufficient=false。
+	evidenceSufficient := true
+	n := 5
+	if len(hits) < 5 {
+		evidenceSufficient = false
+		n = 3
+	} else if hits[2].Score < hits[1].Score*0.5 {
+		evidenceSufficient = false
+		n = 3
+	}
+	if n > len(hits) {
+		n = len(hits)
+	}
+	selected := hits[:n]
+
+	ids := make([]string, 0, len(selected))
+	for _, hi := range selected {
+		ids = append(ids, hi.PaperID)
+	}
+	genPapers := h.buildGeneratePapers(ctx, q, ids, 0)
+
+	answer, err := h.Py.QA(ctx, q, genPapers, evidenceSufficient)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "qa: "+err.Error())
+		return
+	}
+
+	bmSet := idSet(res.ListBM25)
+	vecSet := idSet(res.ListVector)
+	scoreByID := make(map[string]float64, len(selected))
+	for _, hi := range selected {
+		scoreByID[hi.PaperID] = hi.Score
+	}
+	references := make([]map[string]any, 0, len(genPapers))
+	for i, p := range genPapers {
+		references = append(references, map[string]any{
+			"rank":       i + 1,
+			"paper_id":   p.PaperID,
+			"title":      p.Title,
+			"author":     p.Author,
+			"year":       p.PublishYear,
+			"doi":        p.DOI,
+			"journal":    "",
+			"matched_by": matchedBy(p.PaperID, bmSet, vecSet),
+			"score":      scoreByID[p.PaperID],
+			"snippet":    p.TopChunkText,
+		})
+	}
+
+	filtersJSON, _ := json.Marshal(req.Filters)
+	if err := h.DB.AddHistory("qa", q, string(filtersJSON)); err != nil {
+		log.Printf("[history] add: %v", err)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"answer":              answer,
+		"evidence_sufficient": evidenceSufficient,
+		"references":          references,
+	})
+}
+
+type reviewAutoRequest struct {
+	Q string `json:"q"`
+}
+
+func (h *Handlers) ReviewAuto(w http.ResponseWriter, r *http.Request) {
+	var req reviewAutoRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+	q := strings.TrimSpace(req.Q)
+	if q == "" {
+		writeError(w, http.StatusBadRequest, "q is empty")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+
+	res, err := h.runSmartRetrieval(ctx, q)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	hits := res.Golden
+	if len(hits) > 5 {
+		hits = hits[:5]
+	}
+	ids := make([]string, 0, len(hits))
+	for _, hi := range hits {
+		ids = append(ids, hi.PaperID)
+	}
+	genPapers := h.buildGeneratePapers(ctx, q, ids, 0)
+
+	resp, err := h.Py.Generate(ctx, pyclient.GenerateRequest{Query: q, Papers: genPapers})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "generate: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"answer":    resp.Answer,
+		"citations": citationsFromGenPapers(genPapers),
+	})
+}
+
+type reviewManualRequest struct {
+	DOI   string `json:"doi"`
+	Title string `json:"title"`
+	Text  string `json:"text"`
+}
+
+func (h *Handlers) ReviewManual(w http.ResponseWriter, r *http.Request) {
+	var req reviewManualRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+
+	var genPapers []pyclient.GeneratePaper
+	var matched map[string]any
+	query := strings.TrimSpace(req.Title)
+
+	if t := strings.TrimSpace(req.Text); t != "" {
+		genPapers = []pyclient.GeneratePaper{{
+			Title:              "用户提供文本",
+			ResearchDesignText: t,
+			Abstract:           t,
+			TopChunkText:       t,
+		}}
+		if query == "" {
+			query = "用户提供文本"
+		}
+		matched = nil
+	} else {
+		doi := strings.TrimSpace(req.DOI)
+		title := strings.TrimSpace(req.Title)
+		if doi == "" && title == "" {
+			writeError(w, http.StatusBadRequest, "doi/title/text required")
+			return
+		}
+		_, _, papersMap := h.snapshot()
+		var found *store.Paper
+		for i := range papersMap {
+			p := papersMap[i]
+			if (doi != "" && p.DOI == doi) || (title != "" && p.Title == title) {
+				pp := p
+				found = &pp
+				break
+			}
+		}
+		if found == nil {
+			writeError(w, http.StatusNotFound, "未能精确定位到库内文献")
+			return
+		}
+		if query == "" {
+			query = found.Title
+		}
+		genPapers = h.buildGeneratePapers(ctx, query, []string{found.PaperID}, 0)
+		matched = map[string]any{"paper_id": found.PaperID, "title": found.Title}
+	}
+
+	resp, err := h.Py.Generate(ctx, pyclient.GenerateRequest{Query: query, Papers: genPapers})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "generate: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"answer":    resp.Answer,
+		"citations": citationsFromGenPapers(genPapers),
+		"matched":   matched,
+	})
+}
+
+// paperContext 取论文并组装 PaperContext（含 FullText=RawBody）。论文不存在返回 nil。
+func (h *Handlers) paperContext(id string) (*pyclient.PaperContext, error) {
+	p, err := h.DB.GetPaper(id)
+	if err != nil {
+		return nil, err
+	}
+	if p == nil {
+		return nil, nil
+	}
+	return &pyclient.PaperContext{
+		PaperID:            p.PaperID,
+		Title:              p.Title,
+		Author:             p.Author,
+		DOI:                p.DOI,
+		PublishYear:        p.PublishYear,
+		Journal:            p.SourceJournal,
+		Keywords:           p.Keywords,
+		Abstract:           p.Abstract,
+		ResearchDesignText: p.ResearchDesignText,
+		FullText:           p.RawBody,
+	}, nil
+}
+
+type paperChatRequest struct {
+	Question string `json:"question"`
+}
+
+func (h *Handlers) PaperChat(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req paperChatRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+	pc, err := h.paperContext(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if pc == nil {
+		writeError(w, http.StatusNotFound, "paper not found")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+	res, err := h.Py.Chat(ctx, *pc, req.Question)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "chat: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"answer":            res.Answer,
+		"evidence_snippets": res.EvidenceSnippets,
+	})
+}
+
+func (h *Handlers) PaperSummary(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	pc, err := h.paperContext(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if pc == nil {
+		writeError(w, http.StatusNotFound, "paper not found")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+	res, err := h.Py.Summary(ctx, *pc)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "summary: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"summary":  res.Summary,
+		"method":   res.Method,
+		"result":   res.Result,
+		"keywords": res.Keywords,
+	})
+}
+
+func (h *Handlers) PaperMindmap(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	pc, err := h.paperContext(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if pc == nil {
+		writeError(w, http.StatusNotFound, "paper not found")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+	mermaid, err := h.Py.Mindmap(ctx, *pc)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "mindmap: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"mermaid": mermaid})
+}
+
+func (h *Handlers) PaperRelated(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	idx, chunks, papers := h.snapshot()
+	if idx == nil {
+		writeError(w, http.StatusServiceUnavailable, "index not ready")
+		return
+	}
+	seed, ok := papers[id]
+	if !ok {
+		pp, err := h.DB.GetPaper(id)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if pp == nil {
+			writeError(w, http.StatusNotFound, "paper not found")
+			return
+		}
+		seed = *pp
+	}
+
+	// BM25 路：用该论文 keywords 分词全量检索。
+	idx.SetAllowed(nil)
+	seedTokens := search.Tokenize(seed.Keywords)
+	listA := idx.QueryBM25(seedTokens, search.DefaultFieldWeights(), 50)
+
+	// 向量路：取该论文自己最长的 chunk 的 embedding 作为种子向量。
+	var listB []search.Hit
+	var seedVec []float32
+	bestLen := -1
+	for _, c := range chunks {
+		if c.PaperID != id || len(c.Embedding) == 0 {
+			continue
+		}
+		if len(c.ChunkText) > bestLen {
+			bestLen = len(c.ChunkText)
+			seedVec = c.Embedding
+		}
+	}
+	if seedVec != nil {
+		chunkHits := search.TopKChunksByVector(chunks, seedVec, nil, 200)
+		listB = search.AggregateChunksToPapers(chunkHits, 50)
+	}
+
+	golden := search.RRF(listA, listB, 60, 0)
+	bmSet := idSet(listA)
+	vecSet := idSet(listB)
+
+	related := make([]map[string]any, 0, 20)
+	for _, hi := range golden {
+		if hi.PaperID == id {
+			continue
+		}
+		p, ok := papers[hi.PaperID]
+		if !ok {
+			continue
+		}
+		related = append(related, map[string]any{
+			"paper_id":   p.PaperID,
+			"title":      p.Title,
+			"author":     p.Author,
+			"year":       p.PublishYear,
+			"doi":        p.DOI,
+			"journal":    p.SourceJournal,
+			"score":      hi.Score,
+			"matched_by": matchedBy(hi.PaperID, bmSet, vecSet),
+		})
+		if len(related) >= 20 {
+			break
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"related_papers": related})
 }
 
 func (h *Handlers) Reindex(w http.ResponseWriter, r *http.Request) {

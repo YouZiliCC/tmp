@@ -1,5 +1,5 @@
 // ============================================================
-// API types — 对齐 backend handlers.go 实际 JSON 字段
+// API types — 严格对齐 docs/dev-contract.md 平铺字段
 // ============================================================
 
 export interface HealthResponse {
@@ -80,7 +80,7 @@ export interface SmartSearchResponse {
   list_vector: Hit[];
 }
 
-// ---------------- Analyze ----------------
+// ---------------- Analyze (现有综述链路) ----------------
 export interface AnalyzeGenerateRequest {
   q: string;
   paper_ids: string[];
@@ -95,7 +95,6 @@ export interface Citation {
   abstract: string;
   publish_year: number;
   relevance_score: number;
-  // 后端 handlers.go 用 top_chunk_text 字段。这里同时支持别名以防漂移
   top_chunk_text?: string;
   chunk_text?: string;
 }
@@ -124,6 +123,7 @@ export interface Paper {
   abstract: string;
   keywords: string;
   research_design_text?: string;
+  full_text: string;
   chunks: Chunk[];
 }
 
@@ -152,4 +152,97 @@ export interface AnalyzeRunRequest {
 
 export interface AnalyzeRunResponse {
   data: unknown;
+}
+
+// ============================================================
+// 本轮新增 (T3 / T4 / T5)
+// ============================================================
+
+// ---------------- T4 · 智能问答 ----------------
+export interface QaFilters {
+  publish_year?: number;
+  author?: string;
+  journal?: string;
+}
+
+export interface QaRequest {
+  question: string;
+  filters?: QaFilters;
+}
+
+export interface Reference {
+  rank: number;
+  paper_id: string;
+  title: string;
+  author: string;
+  year: number;
+  doi: string;
+  journal: string;
+  matched_by: string; // 关键词 | 语义 | 关键词+语义
+  score: number;
+  snippet: string;
+}
+
+export interface QaResponse {
+  answer: string;
+  evidence_sufficient: boolean;
+  references: Reference[];
+}
+
+// ---------------- T3 · 文献综述 ----------------
+export interface ReviewAutoRequest {
+  q: string;
+}
+
+export interface ReviewManualRequest {
+  doi?: string;
+  title?: string;
+  text?: string;
+}
+
+export interface ReviewMatched {
+  paper_id: string;
+  title: string;
+}
+
+export interface ReviewResponse {
+  answer: string;
+  citations: Citation[];
+  matched?: ReviewMatched | null;
+}
+
+// ---------------- T5 · 论文详情智能体 ----------------
+export interface ChatRequest {
+  question: string;
+}
+
+export interface ChatResponse {
+  answer: string;
+  evidence_snippets: string[];
+}
+
+export interface SummaryResponse {
+  summary: string;
+  method: string;
+  result: string;
+  keywords: string[];
+}
+
+export interface MindmapResponse {
+  mermaid: string;
+}
+
+export interface RelatedPaper {
+  paper_id: string;
+  title: string;
+  author: string;
+  year: number;
+  doi: string;
+  journal: string;
+  score: number;
+  matched_by: string;
+}
+
+export interface RelatedResponse {
+  related_papers: RelatedPaper[];
 }

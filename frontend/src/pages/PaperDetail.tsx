@@ -1,23 +1,36 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { api } from "../api/client";
-import type { Paper } from "../api/types";
-import Chip from "../components/Chip";
-import Kicker from "../components/Kicker";
-import RuleHr from "../components/RuleHr";
+import { api, HttpError } from "../api/client";
+import type {
+  ChatResponse,
+  MindmapResponse,
+  Paper,
+  RelatedResponse,
+  SummaryResponse,
+} from "../api/types";
+import SectionTitle from "../components/SectionTitle";
+import Loading from "../components/Loading";
+import Mindmap from "../components/Mindmap";
+import MatchChips from "../components/MatchChips";
+import ScoreBar from "../components/ScoreBar";
 import { citationGB, joinAuthors, splitKeywords } from "../lib/format";
+
+const FULLTEXT_PREVIEW = 900;
 
 export default function PaperDetail() {
   const { id } = useParams<{ id: string }>();
   const [paper, setPaper] = useState<Paper | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [showChunks, setShowChunks] = useState(false);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     if (!id) return;
     setLoading(true);
     setErr(null);
+    setExpanded(false);
     api
       .paper(id)
       .then(setPaper)
@@ -25,190 +38,363 @@ export default function PaperDetail() {
       .finally(() => setLoading(false));
   }, [id]);
 
-  if (loading) {
+  if (loading) return <Loading label="LOADING PAPER" />;
+  if (err)
     return (
-      <div className="py-20 text-center font-mono text-[0.78rem] tracking-[0.18em] text-ink-3 uppercase">
-        loading…
-      </div>
-    );
-  }
-  if (err) {
-    return (
-      <div className="py-20 text-center">
-        <div className="border border-vermillion p-6 inline-block font-mono text-[0.86rem] text-vermillion">
+      <div className="space-y-4">
+        <div className="term-panel px-4 py-3 mono text-sm text-red" style={{ borderColor: "var(--red)" }}>
           ERROR · {err}
         </div>
-        <div className="mt-6">
-          <Link to="/search" className="text-link">← 返回检索</Link>
-        </div>
+        <Link to="/search" className="kicker text-cyan">
+          ← 返回检索
+        </Link>
       </div>
     );
-  }
   if (!paper) return null;
 
-  const year = paper.publish_year;
-  const journal = paper.source_journal;
-  const keywordList = splitKeywords(paper.keywords);
+  const kws = splitKeywords(paper.keywords);
+  const full = paper.full_text || "";
+  const isLong = full.length > FULLTEXT_PREVIEW;
+  const shownText = expanded || !isLong ? full : full.slice(0, FULLTEXT_PREVIEW);
   const citation = citationGB({
     author: paper.author,
     title: paper.title,
-    journal: journal ?? "",
-    year: year ?? "",
+    journal: paper.source_journal,
+    year: paper.publish_year,
     doi: paper.doi,
   });
 
   function copy() {
-    if (!navigator?.clipboard) return;
-    navigator.clipboard.writeText(citation).then(() => {
+    navigator.clipboard?.writeText(citation).then(() => {
       setCopied(true);
-      setTimeout(() => setCopied(false), 1600);
+      setTimeout(() => setCopied(false), 1500);
     });
   }
 
   return (
-    <article className="fade-up">
-      {/* === breadcrumb / kicker === */}
-      <div className="mb-2">
-        <Link to="/search" className="font-mono text-[0.7rem] uppercase tracking-[0.18em] text-ink-3 hover:text-ink">
-          ← Back to Index · 返回检索
-        </Link>
-      </div>
+    <div className="space-y-8">
+      <Link to="/search" className="kicker text-text-3 hover:text-cyan transition-colors">
+        ← back to search
+      </Link>
 
-      <Kicker block>Article · 文章</Kicker>
-      <h1
-        className="font-display font-black text-ink-dark leading-[1.04] mt-3"
-        style={{ fontSize: "clamp(2rem, 4vw, 3.2rem)", fontVariationSettings: '"opsz" 144' }}
-      >
-        {paper.title}
-      </h1>
-
-      <div className="mt-4 font-mono text-[0.78rem] uppercase tracking-[0.16em] text-ink-3 flex flex-wrap gap-x-3 gap-y-1 tnum">
-        {paper.doi && <span>DOI · {paper.doi}</span>}
-        {year ? <><span>·</span><span>{year}</span></> : null}
-        {journal && (
-          <>
-            <span>·</span>
-            <span className="normal-case italic text-ink-2 font-serif">
-              {journal}
-            </span>
-          </>
+      {/* header */}
+      <header>
+        <h1 className="font-display font-bold text-2xl md:text-3xl leading-tight">{paper.title}</h1>
+        <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 mono text-xs text-text-2">
+          {paper.doi && <span className="text-text-3">{paper.doi}</span>}
+          {paper.doi && <span className="text-text-3">//</span>}
+          <span className="text-amber tnum">{paper.publish_year || "—"}</span>
+          <span className="text-text-3">//</span>
+          <span>{paper.source_journal || "—"}</span>
+        </div>
+        <div className="mt-2 text-sm text-text-2">{joinAuthors(paper.author) || "—"}</div>
+        {kws.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {kws.map((k) => (
+              <span key={k} className="chip">
+                {k}
+              </span>
+            ))}
+          </div>
         )}
-      </div>
+      </header>
 
-      <RuleHr variant="thick" className="mt-5" />
-
-      <div className="grid grid-cols-12 gap-10 mt-10">
-        {/* MAIN COLUMN */}
-        <div className="col-span-12 md:col-span-8">
-          <section>
-            <Kicker block>Abstract · 摘要</Kicker>
-            <div className="body-prose mt-3">
-              {paper.abstract || "（暂无摘要）"}
-            </div>
-          </section>
-
-          {paper.research_design_text && (
-            <section className="mt-10">
-              <Kicker block>Research Design · 研究设计</Kicker>
-              <div className="body-prose mt-3">{paper.research_design_text}</div>
+      <div className="grid grid-cols-12 gap-8">
+        {/* main column */}
+        <div className="col-span-12 lg:col-span-7 space-y-8">
+          {paper.abstract && (
+            <section>
+              <SectionTitle>abstract · 摘要</SectionTitle>
+              <p className="text-[14px] leading-relaxed text-text-2 whitespace-pre-wrap">{paper.abstract}</p>
             </section>
           )}
 
-          {/* CHUNKS */}
-          {paper.chunks?.length ? (
-            <section className="mt-12">
-              <Kicker block>Sections · 段落 (Chunks)</Kicker>
-              <h3 className="section-title mt-2" style={{ fontSize: "1.5rem" }}>
-                正文切分
-              </h3>
-              <RuleHr className="mt-2 mb-6" />
-              <div className="space-y-8">
-                {paper.chunks.map((c, i) => (
-                  <div key={c.chunk_id ?? i} className="grid grid-cols-[64px_1fr] gap-5">
-                    <div className="font-display font-black text-ink-dark tnum"
-                         style={{ fontSize: "1.6rem", lineHeight: 1, fontVariationSettings: '"opsz" 144' }}>
-                      §{((c.chunk_index ?? i) + 1).toString()}
-                    </div>
-                    <div>
-                      <div className="font-mono text-[0.7rem] uppercase tracking-[0.16em] text-ink-3 mb-1">
-                        {`chunk #${(c.chunk_index ?? i) + 1}${
-                          c.paragraph_index !== undefined && c.paragraph_index >= 0
-                            ? ` · ¶${c.paragraph_index}`
-                            : ""
-                        }`}
+          {paper.research_design_text && (
+            <section>
+              <SectionTitle>research design · 研究设计</SectionTitle>
+              <p className="text-[14px] leading-relaxed text-text-2 whitespace-pre-wrap">
+                {paper.research_design_text}
+              </p>
+            </section>
+          )}
+
+          {/* T1: continuous full text */}
+          <section>
+            <SectionTitle>full text · 全文原文</SectionTitle>
+            {full ? (
+              <div className="term-panel p-5">
+                <p className="text-[14px] leading-[1.85] text-text whitespace-pre-wrap">{shownText}</p>
+                {isLong && (
+                  <button
+                    onClick={() => setExpanded((v) => !v)}
+                    className="mt-3 kicker text-cyan hover:text-text transition-colors"
+                  >
+                    {expanded ? "▾ 收起全文" : "▸ 展开全文"}
+                  </button>
+                )}
+              </div>
+            ) : (
+              <p className="text-text-3 text-sm italic">（暂无全文）</p>
+            )}
+          </section>
+
+          {/* chunks moved to secondary collapsed area */}
+          {paper.chunks?.length > 0 && (
+            <section>
+              <button
+                onClick={() => setShowChunks((v) => !v)}
+                className="section-title hover:text-cyan transition-colors"
+              >
+                {showChunks ? "▾" : "▸"} retrieval evidence · 切分段（{paper.chunks.length}）
+              </button>
+              {showChunks && (
+                <div className="mt-3 space-y-2 fade-in">
+                  {paper.chunks.map((c, i) => (
+                    <div key={c.chunk_id ?? i} className="term-panel px-4 py-3">
+                      <div className="kicker mb-1.5">
+                        §{(c.chunk_index ?? i) + 1}
+                        {c.paragraph_index >= 0 ? ` · ¶${c.paragraph_index}` : ""}
                       </div>
-                      <p className="font-serif text-[1rem] leading-[1.75] text-ink whitespace-pre-wrap">
+                      <p className="text-[13px] leading-relaxed text-text-2 whitespace-pre-wrap">
                         {c.chunk_text}
                       </p>
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </section>
-          ) : null}
+          )}
 
-          {/* CITATION */}
-          <section className="mt-16 border-t border-ink pt-6">
-            <Kicker block>Citation · 引用格式</Kicker>
-            <div className="mt-3 grid grid-cols-[1fr_auto] gap-4 items-start">
-              <p className="font-serif text-[1rem] leading-[1.75] text-ink">
-                {citation}
-              </p>
-              <button
-                type="button"
-                onClick={copy}
-                className="btn-ghost shrink-0"
-              >
-                {copied ? "copied ✓" : "copy · 复制"}
-              </button>
-            </div>
-            <div className="mt-1 font-mono text-[0.66rem] text-ink-3 tracking-[0.14em] uppercase">
-              format · GB/T 7714 (approx.)
-            </div>
+          {/* citation */}
+          <section className="border-t border-line pt-5">
+            <SectionTitle
+              right={
+                <button onClick={copy} className="btn-term">
+                  {copied ? "copied ✓" : "copy"}
+                </button>
+              }
+            >
+              citation · GB/T 7714
+            </SectionTitle>
+            <p className="mono text-xs text-text-2 break-words">{citation}</p>
           </section>
         </div>
 
-        {/* RIGHT COLUMN */}
-        <aside className="col-span-12 md:col-span-4 md:border-l md:border-rule md:pl-8">
-          <section>
-            <Kicker block>Authors · 作者</Kicker>
-            <div className="mt-2 font-serif text-[1rem] text-ink">
-              {joinAuthors(paper.author) || "—"}
-            </div>
-          </section>
+        {/* agent panel */}
+        <div className="col-span-12 lg:col-span-5">
+          <div className="lg:sticky lg:top-6">
+            <AgentPanel paper={paper} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
-          {keywordList.length > 0 ? (
-            <section className="mt-8">
-              <Kicker block>Keywords · 关键词</Kicker>
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                {keywordList.map((k) => (
-                  <Chip key={k}>{k}</Chip>
+/* ----------------------- agent panel ----------------------- */
+
+type AgentTab = "chat" | "summary" | "mindmap" | "related";
+
+function AgentPanel({ paper }: { paper: Paper }) {
+  const [tab, setTab] = useState<AgentTab>("summary");
+  return (
+    <div className="term-panel p-4">
+      <div className="kicker mb-3">▸ academic agent · 学术智能体</div>
+      <div className="flex flex-wrap gap-1 border-b border-line mb-4">
+        {([
+          ["summary", "AI 概要"],
+          ["chat", "AI 同读"],
+          ["mindmap", "思维导图"],
+          ["related", "相关文献"],
+        ] as const).map(([k, lbl]) => (
+          <button key={k} className={`tab-term ${tab === k ? "tab-active" : ""}`} onClick={() => setTab(k)}>
+            {lbl}
+          </button>
+        ))}
+      </div>
+      {tab === "summary" && <SummaryTab id={paper.paper_id} />}
+      {tab === "chat" && <ChatTab id={paper.paper_id} />}
+      {tab === "mindmap" && <MindmapTab id={paper.paper_id} />}
+      {tab === "related" && <RelatedTab id={paper.paper_id} />}
+    </div>
+  );
+}
+
+function useAgent<T>(fn: () => Promise<T>) {
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [data, setData] = useState<T | null>(null);
+  const go = async () => {
+    setLoading(true);
+    setErr(null);
+    try {
+      setData(await fn());
+    } catch (e) {
+      setErr(e instanceof HttpError ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+  return { loading, err, data, go, setData };
+}
+
+function AgentError({ msg }: { msg: string }) {
+  return <div className="mono text-xs text-red mt-2">ERROR · {msg}</div>;
+}
+
+function SummaryTab({ id }: { id: string }) {
+  const { loading, err, data, go } = useAgent<SummaryResponse>(() => api.paperSummary(id));
+  return (
+    <div>
+      {!data && !loading && (
+        <button className="btn-term btn-primary w-full justify-center" onClick={go}>
+          ▸ 生成概要
+        </button>
+      )}
+      {loading && <Loading label="SUMMARIZING" />}
+      {err && <AgentError msg={err} />}
+      {data && (
+        <div className="space-y-3 fade-in">
+          <Block label="概要" text={data.summary} />
+          <Block label="方法" text={data.method} />
+          <Block label="结果" text={data.result} />
+          {data.keywords?.length > 0 && (
+            <div>
+              <div className="kicker mb-1.5">关键词</div>
+              <div className="flex flex-wrap gap-1.5">
+                {data.keywords.map((k) => (
+                  <span key={k} className="chip chip-cyan">
+                    {k}
+                  </span>
                 ))}
               </div>
-            </section>
-          ) : null}
+            </div>
+          )}
+          <button className="btn-term w-full justify-center" onClick={go}>
+            ↻ 重新生成
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
-          <section className="mt-10 border-t border-rule pt-5">
-            <Kicker block>Identifier · 标识</Kicker>
-            <dl className="mt-3 space-y-1.5 font-mono text-[0.78rem]">
-              <div className="grid grid-cols-[90px_1fr] gap-2">
-                <dt className="text-ink-3 uppercase tracking-wider text-[0.66rem]">paper_id</dt>
-                <dd className="text-ink-2 break-all">{paper.paper_id}</dd>
+function Block({ label, text }: { label: string; text: string }) {
+  if (!text) return null;
+  return (
+    <div>
+      <div className="kicker mb-1">{label}</div>
+      <p className="text-[13px] leading-relaxed text-text-2 whitespace-pre-wrap">{text}</p>
+    </div>
+  );
+}
+
+function ChatTab({ id }: { id: string }) {
+  const [question, setQuestion] = useState("");
+  const { loading, err, data, go } = useAgent<ChatResponse>(() =>
+    api.paperChat(id, { question: question.trim() }),
+  );
+  return (
+    <div className="space-y-3">
+      <textarea
+        value={question}
+        onChange={(e) => setQuestion(e.target.value)}
+        rows={3}
+        placeholder="就这篇论文提问，例如：本文的核心论点是什么？"
+        className="input-term resize-y font-sans"
+      />
+      <button className="btn-term btn-primary w-full justify-center" disabled={loading || !question.trim()} onClick={go}>
+        {loading ? "thinking…" : "▸ 提问"}
+      </button>
+      {loading && <Loading label="READING" />}
+      {err && <AgentError msg={err} />}
+      {data && (
+        <div className="fade-in space-y-2">
+          <p className="text-[13px] leading-relaxed text-text whitespace-pre-wrap">{data.answer}</p>
+          {data.evidence_snippets?.length > 0 && (
+            <details className="mt-2">
+              <summary className="kicker text-cyan cursor-pointer">▸ 原文依据</summary>
+              <div className="mt-2 space-y-2">
+                {data.evidence_snippets.map((s, i) => (
+                  <p key={i} className="text-[12px] leading-relaxed text-text-2 border-l-2 border-line-2 pl-3 whitespace-pre-wrap">
+                    {s}
+                  </p>
+                ))}
               </div>
-              {paper.doi && (
-                <div className="grid grid-cols-[90px_1fr] gap-2">
-                  <dt className="text-ink-3 uppercase tracking-wider text-[0.66rem]">doi</dt>
-                  <dd className="text-ink-2 break-all">{paper.doi}</dd>
+            </details>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MindmapTab({ id }: { id: string }) {
+  const { loading, err, data, go } = useAgent<MindmapResponse>(() => api.paperMindmap(id));
+  return (
+    <div>
+      {!data && !loading && (
+        <button className="btn-term btn-primary w-full justify-center" onClick={go}>
+          ▸ 生成思维导图
+        </button>
+      )}
+      {loading && <Loading label="MAPPING" />}
+      {err && <AgentError msg={err} />}
+      {data && (
+        <div className="fade-in space-y-3">
+          <Mindmap code={data.mermaid} />
+          <button className="btn-term w-full justify-center" onClick={go}>
+            ↻ 重新生成
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RelatedTab({ id }: { id: string }) {
+  const { loading, err, data, go } = useAgent<RelatedResponse>(() => api.paperRelated(id));
+  const max = (data?.related_papers ?? []).reduce((m, r) => Math.max(m, r.score), 0.0001);
+  return (
+    <div>
+      {!data && !loading && (
+        <button className="btn-term btn-primary w-full justify-center" onClick={go}>
+          ▸ 检索相关文献
+        </button>
+      )}
+      {loading && <Loading label="RETRIEVING" />}
+      {err && <AgentError msg={err} />}
+      {data && (
+        <div className="space-y-2 fade-in">
+          {data.related_papers.length === 0 ? (
+            <p className="text-text-3 text-sm italic">— 无相关文献 —</p>
+          ) : (
+            data.related_papers.map((r, i) => (
+              <Link
+                key={r.paper_id + i}
+                to={`/paper/${encodeURIComponent(r.paper_id)}`}
+                className="term-panel term-panel-hover block px-3 py-2.5 group"
+              >
+                <div className="flex items-start gap-2">
+                  <span className="mono text-text-3 text-xs tnum pt-0.5">{String(i + 1).padStart(2, "0")}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[13px] text-text group-hover:text-cyan transition-colors leading-snug">
+                      {r.title}
+                    </div>
+                    <div className="mt-1 flex items-center gap-2 text-[11px] text-text-2">
+                      <span className="mono tnum text-amber">{r.year || "—"}</span>
+                      <MatchChips matchedBy={r.matched_by} />
+                    </div>
+                    <div className="mt-1.5">
+                      <ScoreBar score={r.score} max={max} />
+                    </div>
+                  </div>
                 </div>
-              )}
-              <div className="grid grid-cols-[90px_1fr] gap-2">
-                <dt className="text-ink-3 uppercase tracking-wider text-[0.66rem]">chunks</dt>
-                <dd className="text-ink-2 tnum">{paper.chunks?.length ?? 0}</dd>
-              </div>
-            </dl>
-          </section>
-        </aside>
-      </div>
-    </article>
+              </Link>
+            ))
+          )}
+        </div>
+      )}
+    </div>
   );
 }

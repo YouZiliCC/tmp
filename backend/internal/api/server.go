@@ -38,6 +38,13 @@ func New(cfg config.Config, h *Handlers) http.Handler {
 		r.Get("/papers/{id}/chunks", h.GetPaperChunks)
 		r.Get("/history", h.History)
 		r.Post("/reload", h.Reindex)
+		r.Post("/qa/answer", h.QAAnswer)
+		r.Post("/review/auto", h.ReviewAuto)
+		r.Post("/review/manual", h.ReviewManual)
+		r.Post("/papers/{id}/chat", h.PaperChat)
+		r.Post("/papers/{id}/summary", h.PaperSummary)
+		r.Post("/papers/{id}/mindmap", h.PaperMindmap)
+		r.Post("/papers/{id}/related", h.PaperRelated)
 	})
 
 	return r

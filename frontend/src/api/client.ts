@@ -3,13 +3,23 @@ import type {
   AnalyzeGenerateResponse,
   AnalyzeRunRequest,
   AnalyzeRunResponse,
+  ChatRequest,
+  ChatResponse,
   HealthResponse,
   HistoryItem,
+  MindmapResponse,
   Paper,
   Chunk,
+  QaRequest,
+  QaResponse,
+  RelatedResponse,
+  ReviewAutoRequest,
+  ReviewManualRequest,
+  ReviewResponse,
   SmartSearchRequest,
   SmartSearchResponse,
   StatsResponse,
+  SummaryResponse,
   TraditionalSearchRequest,
   TraditionalSearchResponse,
 } from "./types";
@@ -59,35 +69,28 @@ async function request<T>(
   }
 }
 
+const post = <T>(path: string, body: unknown): Promise<T> =>
+  request<T>(path, { method: "POST", body: JSON.stringify(body) });
+
 export const api = {
   health: () => request<HealthResponse>("/health"),
   stats: () => request<StatsResponse>("/stats"),
 
   searchTraditional: (req: TraditionalSearchRequest) =>
-    request<TraditionalSearchResponse>("/search/traditional", {
-      method: "POST",
-      body: JSON.stringify(req),
-    }),
+    post<TraditionalSearchResponse>("/search/traditional", req),
 
   searchSmart: (req: SmartSearchRequest) =>
-    request<SmartSearchResponse>("/search/smart", {
-      method: "POST",
-      body: JSON.stringify(req),
-    }),
+    post<SmartSearchResponse>("/search/smart", req),
 
   analyzeGenerate: (req: AnalyzeGenerateRequest) =>
-    request<AnalyzeGenerateResponse>("/analyze/generate", {
-      method: "POST",
-      body: JSON.stringify(req),
-    }),
+    post<AnalyzeGenerateResponse>("/analyze/generate", req),
 
-  paper: (id: string) =>
-    request<Paper>(`/papers/${encodeURIComponent(id)}`),
+  paper: (id: string) => request<Paper>(`/papers/${encodeURIComponent(id)}`),
 
   paperChunks: async (id: string, q?: string): Promise<Chunk[]> => {
     const res = await request<{ chunks: Chunk[] } | Chunk[]>(
       `/papers/${encodeURIComponent(id)}/chunks`,
-      { query: { q } },
+      { query: { q } }
     );
     if (Array.isArray(res)) return res;
     return res?.chunks ?? [];
@@ -96,17 +99,33 @@ export const api = {
   history: async (limit = 20): Promise<HistoryItem[]> => {
     const res = await request<{ history: HistoryItem[] } | HistoryItem[]>(
       "/history",
-      { query: { limit } },
+      { query: { limit } }
     );
     if (Array.isArray(res)) return res;
     return res?.history ?? [];
   },
 
   analyzeRun: (req: AnalyzeRunRequest) =>
-    request<AnalyzeRunResponse>("/analyze/run", {
-      method: "POST",
-      body: JSON.stringify(req),
-    }),
+    post<AnalyzeRunResponse>("/analyze/run", req),
+
+  // ---------------- T4 ----------------
+  qaAnswer: (req: QaRequest) => post<QaResponse>("/qa/answer", req),
+
+  // ---------------- T3 ----------------
+  reviewAuto: (req: ReviewAutoRequest) =>
+    post<ReviewResponse>("/review/auto", req),
+  reviewManual: (req: ReviewManualRequest) =>
+    post<ReviewResponse>("/review/manual", req),
+
+  // ---------------- T5 ----------------
+  paperChat: (id: string, req: ChatRequest) =>
+    post<ChatResponse>(`/papers/${encodeURIComponent(id)}/chat`, req),
+  paperSummary: (id: string) =>
+    post<SummaryResponse>(`/papers/${encodeURIComponent(id)}/summary`, {}),
+  paperMindmap: (id: string) =>
+    post<MindmapResponse>(`/papers/${encodeURIComponent(id)}/mindmap`, {}),
+  paperRelated: (id: string) =>
+    post<RelatedResponse>(`/papers/${encodeURIComponent(id)}/related`, {}),
 };
 
 export { HttpError };

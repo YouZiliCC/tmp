@@ -1,231 +1,169 @@
-import { Link } from "react-router-dom";
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../api/client";
 import type { StatsResponse } from "../api/types";
-import Kicker from "../components/Kicker";
-import RomanNumeral from "../components/RomanNumeral";
-import Bars from "../components/Bars";
-import RuleHr from "../components/RuleHr";
+import SectionTitle from "../components/SectionTitle";
 
-interface EntryProps {
-  numeral: number;
-  kicker: string;
-  title: string;
-  zh: string;
-  body: string;
+interface Entry {
   to: string;
+  tag: string;
+  title: string;
+  en: string;
+  desc: string;
 }
 
-function Entry({ numeral, kicker, title, zh, body, to }: EntryProps) {
-  return (
-    <Link to={to} className="block group">
-      <article className="j-card h-full">
-        <div className="flex items-start gap-7">
-          <div className="pt-1 shrink-0">
-            <RomanNumeral n={numeral} />
-          </div>
-          <div className="flex-1">
-            <Kicker block>{kicker}</Kicker>
-            <h3
-              className="font-display font-black text-ink-dark leading-[1.05] mt-2"
-              style={{ fontSize: "2.1rem", fontVariationSettings: '"opsz" 144' }}
-            >
-              {title}
-            </h3>
-            <div className="font-serif text-ink-2 italic mt-0.5 mb-3">{zh}</div>
-            <p className="font-serif text-[0.98rem] leading-[1.7] text-ink-2">
-              {body}
-            </p>
-            <div className="mt-6 flex items-center justify-between">
-              <span className="font-mono text-[0.72rem] uppercase tracking-[0.18em] text-ink-3 group-hover:text-vermillion transition-colors">
-                Enter
-              </span>
-              <span className="font-display text-[1.6rem] text-ink-2 group-hover:text-vermillion transition-colors">
-                →
-              </span>
-            </div>
-          </div>
-        </div>
-      </article>
-    </Link>
-  );
-}
-
-function StatCell({ value, label, sub }: { value: string; label: string; sub?: string }) {
-  return (
-    <div>
-      <div className="kicker">{label}</div>
-      <div
-        className="font-display font-black text-ink-dark tnum mt-2"
-        style={{ fontSize: "3.2rem", lineHeight: 0.95, fontVariationSettings: '"opsz" 144' }}
-      >
-        {value}
-      </div>
-      {sub && (
-        <div className="font-mono text-[0.72rem] text-ink-3 mt-1 tracking-wider tnum">
-          {sub}
-        </div>
-      )}
-    </div>
-  );
-}
+const ENTRIES: Entry[] = [
+  {
+    to: "/search",
+    tag: "01",
+    title: "文献检索",
+    en: "RETRIEVAL",
+    desc: "字段加权 BM25 + 向量语义双路检索。支持传统精确检索与自然语言 AI 增强检索。",
+  },
+  {
+    to: "/qa",
+    tag: "02",
+    title: "智能问答",
+    en: "RAG-QA",
+    desc: "提出研究问题，系统自动取证据文献作 RAG 增强，直接作答并附参考文献表。",
+  },
+  {
+    to: "/review",
+    tag: "03",
+    title: "文献综述",
+    en: "SYNTHESIS",
+    desc: "自动综述（检索后自选文献）或自选文献综述（DOI/标题精确定位），生成结构化综述。",
+  },
+];
 
 export default function Home() {
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    api.stats()
+    api
+      .stats()
       .then(setStats)
       .catch((e: Error) => setErr(e.message));
   }, []);
 
   const years = stats?.year_dist ?? {};
-  const yearKeys = Object.keys(years).map(Number).filter((n) => !isNaN(n)).sort();
-  const yMin = yearKeys[0];
-  const yMax = yearKeys[yearKeys.length - 1];
+  const yearEntries = Object.entries(years)
+    .map(([y, c]) => [Number(y), c] as [number, number])
+    .filter(([y]) => y > 0)
+    .sort((a, b) => a[0] - b[0]);
+  const maxCount = yearEntries.reduce((m, [, c]) => Math.max(m, c), 0) || 1;
 
   return (
-    <div className="stagger">
-      {/* Epigraph */}
-      <section className="grid grid-cols-12 gap-6 mt-2">
-        <div className="col-span-12 md:col-span-7">
-          <Kicker block>Editorial · 卷首语</Kicker>
-          <blockquote className="epigraph mt-4 pl-5 border-l border-vermillion">
-            <span className="font-display italic">
-              “A library is a discipline of attention; the catalogue is its grammar.”
-            </span>
-            <div className="font-serif not-italic text-ink-2 mt-3 leading-[1.7] text-[1rem]">
-              图书馆是一种凝神的训练，目录则是它的语法。
-              本期由一组以中文人文社科论文为底本的检索系统组成，
-              既呈传统倒排索引的"卡片柜"，亦试以生成式重写与稠密向量
-              重组同一文本宇宙。
-            </div>
-          </blockquote>
-        </div>
-
-        <div className="col-span-12 md:col-span-5 md:pl-10 md:border-l md:border-rule">
-          <Kicker block>In This Issue · 本期辑录</Kicker>
-          <ol className="mt-3 space-y-2 font-serif text-[0.96rem]">
-            <li className="grid grid-cols-[28px_1fr] gap-2">
-              <span className="font-mono tnum text-ink-3 text-[0.78rem]">01</span>
-              <span>传统检索：以字段为目的卡片柜式检索</span>
-            </li>
-            <li className="grid grid-cols-[28px_1fr] gap-2">
-              <span className="font-mono tnum text-ink-3 text-[0.78rem]">02</span>
-              <span>智能检索：以语义为目的研究性检索</span>
-            </li>
-            <li className="grid grid-cols-[28px_1fr] gap-2">
-              <span className="font-mono tnum text-ink-3 text-[0.78rem]">03</span>
-              <span>分析报告：自动综述 + 引文回溯</span>
-            </li>
-            <li className="grid grid-cols-[28px_1fr] gap-2">
-              <span className="font-mono tnum text-ink-3 text-[0.78rem]">04</span>
-              <span>刊例：字段权重、数据来源与使用说明</span>
-            </li>
-          </ol>
+    <div className="stagger space-y-10">
+      {/* hero */}
+      <section>
+        <div className="kicker mb-3">// 信息存储与检索 · 学术智能体平台</div>
+        <h1 className="font-display font-extrabold text-3xl md:text-4xl leading-tight">
+          检索、问答、综述
+          <span className="text-cyan">.</span>
+        </h1>
+        <p className="mt-3 text-text-2 max-w-2xl leading-relaxed">
+          一个面向中文人文社科文献的研究终端。底层以 BM25 字段加权与稠密向量双路检索 +
+          RRF 融合排序，上层提供智能问答与文献综述，并在每篇论文详情页内置学术智能体。
+        </p>
+        <div className="mt-5 flex flex-wrap gap-2">
+          <span className="chip chip-cyan">SQLite</span>
+          <span className="chip chip-cyan">本地 BGE 向量</span>
+          <span className="chip chip-amber">BM25 字段加权</span>
+          <span className="chip chip-amber">RRF 融合</span>
+          <span className="chip chip-violet">DeepSeek RAG</span>
         </div>
       </section>
 
-      <RuleHr variant="thick" className="mt-12" />
-
-      {/* Two entries */}
-      <section className="mt-10">
-        <Kicker block>The Two Reading Rooms · 两间阅览室</Kicker>
-        <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-8">
-          <Entry
-            numeral={1}
-            kicker="Section I · 卡片式检索"
-            title="Traditional Indexing"
-            zh="传统检索"
-            body="按字段（标题、作者、年份、刊名、关键词）逐项过滤；命中以朱红色高亮显示。适合已知作者、关键词或追踪某一刊物上的论文。"
-            to="/search"
-          />
-          <Entry
-            numeral={2}
-            kicker="Section II · 语义式检索"
-            title="Generative Analysis"
-            zh="智能检索"
-            body="将自然语言问题重写为结构化查询包，混合 BM25 与稠密向量。可勾选论文进入生成式综述，输出带引文的回答。"
-            to="/smart"
-          />
+      {/* entries */}
+      <section>
+        <SectionTitle>three entrances · 三大入口</SectionTitle>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {ENTRIES.map((e) => (
+            <Link
+              key={e.to}
+              to={e.to}
+              className="term-panel term-panel-hover p-5 group flex flex-col"
+            >
+              <div className="flex items-baseline justify-between">
+                <span className="mono text-cyan text-2xl font-semibold tnum">
+                  {e.tag}
+                </span>
+                <span className="kicker">{e.en}</span>
+              </div>
+              <h3 className="mt-4 font-display font-semibold text-lg group-hover:text-cyan transition-colors">
+                {e.title}
+              </h3>
+              <p className="mt-2 text-[13px] text-text-2 leading-relaxed flex-1">
+                {e.desc}
+              </p>
+              <span className="mt-4 kicker text-cyan opacity-0 group-hover:opacity-100 transition-opacity">
+                ▸ enter
+              </span>
+            </Link>
+          ))}
         </div>
       </section>
 
-      <RuleHr variant="thick" className="mt-12" />
-
-      {/* Statistics */}
-      <section className="mt-10">
-        <div className="flex items-end justify-between">
-          <div>
-            <Kicker block>Statistics · 馆藏概览</Kicker>
-            <h2 className="section-title mt-2">藏书一览</h2>
-          </div>
-          {err && (
-            <div className="font-mono text-[0.74rem] text-vermillion">
-              · stats unavailable: {err}
-            </div>
-          )}
-        </div>
-
-        <div className="mt-6 grid grid-cols-2 md:grid-cols-4 gap-x-8 gap-y-8">
-          <StatCell
-            value={stats ? String(stats.paper_count) : "—"}
-            label="Papers · 论文数"
-            sub="entries indexed"
-          />
-          <StatCell
-            value={stats ? String(stats.chunk_count) : "—"}
-            label="Chunks · 切块数"
-            sub="passages segmented"
-          />
-          <StatCell
+      {/* stats */}
+      <section>
+        <SectionTitle
+          right={
+            err ? <span className="mono text-xs text-red">offline</span> : null
+          }
+        >
+          corpus stats · 馆藏概览
+        </SectionTitle>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <Stat label="papers · 论文" value={stats?.paper_count} />
+          <Stat label="chunks · 切块" value={stats?.chunk_count} />
+          <Stat
+            label="years · 年份跨度"
             value={
-              yMin && yMax ? `${yMin}–${yMax}` : "—"
+              yearEntries.length
+                ? `${yearEntries[0][0]}–${yearEntries[yearEntries.length - 1][0]}`
+                : undefined
             }
-            label="Years · 收录年份"
-            sub="coverage range"
           />
-          <StatCell
-            value={stats ? String(stats.top_journals?.length ?? 0) : "—"}
-            label="Journals · 刊物数"
-            sub="distinct venues"
-          />
+          <Stat label="journals · 刊物" value={stats?.top_journals?.length} />
         </div>
 
-        <div className="mt-12">
-          <Kicker block>Year Distribution · 年份分布</Kicker>
-          <div className="mt-6 border-t border-rule pt-6">
-            <Bars data={years} />
+        {/* year distribution bars */}
+        {yearEntries.length > 0 && (
+          <div className="term-panel mt-4 p-5">
+            <div className="kicker mb-4">year distribution · 年份分布</div>
+            <div className="flex items-end gap-3 h-40">
+              {yearEntries.map(([y, c]) => (
+                <div key={y} className="flex-1 flex flex-col items-center gap-2">
+                  <span className="mono text-[11px] text-amber tnum">{c}</span>
+                  <div className="w-full flex items-end justify-center h-28">
+                    <div
+                      className="w-full max-w-[44px] border border-cyan"
+                      style={{
+                        height: `${(c / maxCount) * 100}%`,
+                        background: "rgba(78,205,196,0.12)",
+                      }}
+                    />
+                  </div>
+                  <span className="mono text-[11px] text-text-3 tnum">{y}</span>
+                </div>
+              ))}
+            </div>
           </div>
-        </div>
-
-        {stats?.top_journals?.length ? (
-          <div className="mt-12">
-            <Kicker block>Top Journals · 主要刊物</Kicker>
-            <table className="j-table mt-4">
-              <thead>
-                <tr>
-                  <th style={{ width: 60 }}>No.</th>
-                  <th>Journal · 刊名</th>
-                  <th style={{ width: 120 }} className="text-right">Count</th>
-                </tr>
-              </thead>
-              <tbody>
-                {stats.top_journals.slice(0, 8).map((j, i) => (
-                  <tr key={j.name}>
-                    <td className="font-mono text-ink-3 tnum">
-                      {String(i + 1).padStart(2, "0")}
-                    </td>
-                    <td className="font-serif italic">{j.name}</td>
-                    <td className="font-mono text-right tnum">{j.count}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : null}
+        )}
       </section>
+    </div>
+  );
+}
+
+function Stat({ label, value }: { label: string; value?: number | string }) {
+  return (
+    <div className="term-panel p-4">
+      <div className="kicker">{label}</div>
+      <div className="mt-2 font-display font-bold text-2xl tnum text-text">
+        {value ?? <span className="text-text-3">—</span>}
+      </div>
     </div>
   );
 }

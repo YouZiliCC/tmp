@@ -1,30 +1,30 @@
 import { Route, Routes } from "react-router-dom";
-import Masthead from "./components/Masthead";
-import NavBar from "./components/NavBar";
-import Footer from "./components/Footer";
+import Sidebar from "./components/Sidebar";
 import Home from "./pages/Home";
-import TraditionalSearch from "./pages/TraditionalSearch";
-import SmartSearch from "./pages/SmartSearch";
+import Search from "./pages/Search";
+import QA from "./pages/QA";
+import Review from "./pages/Review";
 import PaperDetail from "./pages/PaperDetail";
 import Help from "./pages/Help";
 import NotFound from "./pages/NotFound";
 
 export default function App() {
   return (
-    <div className="min-h-screen flex flex-col">
-      <Masthead />
-      <NavBar />
-      <main className="flex-1 max-w-column w-full mx-auto px-6 pt-10 pb-16">
-        <Routes>
-          <Route path="/" element={<Home />} />
-          <Route path="/search" element={<TraditionalSearch />} />
-          <Route path="/smart" element={<SmartSearch />} />
-          <Route path="/paper/:id" element={<PaperDetail />} />
-          <Route path="/help" element={<Help />} />
-          <Route path="*" element={<NotFound />} />
-        </Routes>
+    <div className="min-h-screen flex">
+      <Sidebar />
+      <main className="flex-1 min-w-0">
+        <div className="max-w-column w-full mx-auto px-8 py-9">
+          <Routes>
+            <Route path="/" element={<Home />} />
+            <Route path="/search" element={<Search />} />
+            <Route path="/qa" element={<QA />} />
+            <Route path="/review" element={<Review />} />
+            <Route path="/paper/:id" element={<PaperDetail />} />
+            <Route path="/help" element={<Help />} />
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </div>
       </main>
-      <Footer />
     </div>
   );
 }

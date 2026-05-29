@@ -387,6 +387,359 @@ def generate(req: GenerateRequest) -> Dict[str, Any]:
     return {"answer": answer or "", "citations": citations}
 
 
+# --- shared llm config ---
+
+
+def _llm_config() -> Dict[str, Any]:
+    """与 /generate 一致的 env 读取方式。"""
+    model = os.environ.get("LLM_MODEL") or ""
+    base_url = os.environ.get("LLM_BASE_URL")
+    api_key = os.environ.get("LLM_API_KEY")
+    try:
+        temperature = float(os.environ.get("LLM_TEMPERATURE") or 0.2)
+    except ValueError:
+        temperature = 0.2
+    return {
+        "model": model,
+        "base_url": base_url,
+        "api_key": api_key,
+        "temperature": temperature,
+    }
+
+
+def _require_llm(cfg: Dict[str, Any]) -> None:
+    if not cfg["model"] or not cfg["api_key"]:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "llm_not_configured", "message": "LLM_MODEL / LLM_API_KEY missing"},
+        )
+
+
+def _call_chat(messages: List[Dict[str, str]], cfg: Dict[str, Any], error: str,
+               response_format: Optional[Dict[str, Any]] = None) -> str:
+    try:
+        return llm_mod.chat(
+            messages,
+            model=cfg["model"],
+            temperature=cfg["temperature"],
+            base_url=cfg["base_url"],
+            api_key=cfg["api_key"],
+            response_format=response_format,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail={"error": error, "message": str(e)})
+
+
+# --- qa (T4 智能问答) ---
+
+
+_QA_SYSTEM = (
+    "你是学术问答助手，只能基于下方提供的文献证据回答用户问题。\n"
+    "这不是写综述或研究报告，请直接、简洁地回答用户的问题。\n"
+    "硬性规则：\n"
+    "1. 只能依据提供的【证据N】作答，严禁编造证据之外的事实。\n"
+    "2. 每个关键论断后必须用 [DOI:xxx] 或 [标题] 标注来源。\n"
+    "3. 若现有文献证据不足以回答该问题，必须明确回答“根据现有文献证据，不足以回答该问题”，不要硬答。\n"
+    "输出语言：简体中文，正文使用 Markdown，但禁止使用任何代码块。"
+)
+
+
+class QaRequest(BaseModel):
+    question: str = ""
+    papers: List[GeneratePaper] = Field(default_factory=list)
+    evidence_sufficient: bool = True
+
+
+def _build_qa_context(papers: List[GeneratePaper]) -> str:
+    parts: List[str] = []
+    for idx, p in enumerate(papers, start=1):
+        doi = p.doi.strip() or f"PaperID:{p.paper_id}"
+        title = p.title.strip() or p.paper_id
+        year = p.publish_year if p.publish_year is not None else "未知"
+        chunk = p.top_chunk_text.strip() or "（未提供）"
+        design = p.research_design_text.strip()
+        if len(design) > 800:
+            design = design[:800] + "…"
+        design = design or "（未提供）"
+        block = (
+            f"【证据{idx}】{title}|{doi}|{year}\n"
+            f"摘要片段: {chunk}\n"
+            f"研究设计: {design}"
+        )
+        parts.append(block)
+    return "\n\n".join(parts)
+
+
+@app.post("/qa")
+def qa(req: QaRequest) -> Dict[str, Any]:
+    question = (req.question or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail={"error": "empty_question"})
+    cfg = _llm_config()
+    _require_llm(cfg)
+
+    context = _build_qa_context(req.papers or [])
+    prefix = ""
+    if not req.evidence_sufficient:
+        prefix = "请注意：检索到的相关文献较少，请在回答开头加上一句“（注：检索到的相关文献较少，以下结论可信度有限）”。\n\n"
+    user_prompt = (
+        f"{prefix}"
+        f"用户问题：{question}\n\n"
+        f"以下是检索到的文献证据：\n\n"
+        f"{context}\n\n"
+        "请基于以上证据直接回答用户问题。"
+    )
+    messages = [
+        {"role": "system", "content": _QA_SYSTEM},
+        {"role": "user", "content": user_prompt},
+    ]
+    answer = _call_chat(messages, cfg, "qa_failed")
+    return {"answer": answer or ""}
+
+
+# --- summary (T5 ai 概要) ---
+
+
+_SUMMARY_SYSTEM = (
+    "你是学术论文结构化提炼助手。请基于提供的论文全文，提炼出概要、方法、结果与关键词。\n"
+    "只能依据论文内容，严禁编造。\n"
+    "请严格输出 JSON 对象，不要解释、不要使用 markdown 代码块：\n"
+    "{\n"
+    '  "summary": "论文概要（中文，简洁完整）",\n'
+    '  "method": "研究方法",\n'
+    '  "result": "主要结果",\n'
+    '  "keywords": ["5到10个中文关键词"]\n'
+    "}"
+)
+
+
+class PaperPayload(BaseModel):
+    paper_id: str = ""
+    title: str = ""
+    author: str = ""
+    doi: str = ""
+    publish_year: Optional[int] = None
+    journal: str = ""
+    keywords: str = ""
+    abstract: str = ""
+    research_design_text: str = ""
+    full_text: str = ""
+
+
+class SummaryRequest(BaseModel):
+    paper: PaperPayload = Field(default_factory=PaperPayload)
+
+
+class ChatPaperRequest(BaseModel):
+    paper: PaperPayload = Field(default_factory=PaperPayload)
+    question: str = ""
+
+
+def _paper_header(p: PaperPayload) -> str:
+    year = p.publish_year if p.publish_year is not None else "未知"
+    return (
+        f"标题: {p.title.strip() or p.paper_id}\n"
+        f"作者: {p.author.strip() or '（未提供）'}\n"
+        f"DOI: {p.doi.strip() or '（未提供）'} | 期刊: {p.journal.strip() or '（未提供）'} | 年份: {year}\n"
+        f"关键词: {p.keywords.strip() or '（未提供）'}\n"
+        f"摘要: {p.abstract.strip() or '（未提供）'}"
+    )
+
+
+def _split_keywords(text: str) -> List[str]:
+    if not text:
+        return []
+    parts = re.split(r"[,，;；、\s]+", text.strip())
+    out: List[str] = []
+    seen = set()
+    for x in parts:
+        x = x.strip()
+        if x and x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+
+@app.post("/summary")
+def summary(req: SummaryRequest) -> Dict[str, Any]:
+    p = req.paper
+    cfg = _llm_config()
+    _require_llm(cfg)
+
+    full_text = (p.full_text or "").strip()
+    if len(full_text) > 6000:
+        full_text = full_text[:6000] + "…"
+    body = full_text or p.abstract.strip() or "（未提供全文）"
+    user_prompt = (
+        f"{_paper_header(p)}\n\n"
+        f"论文全文：\n{body}\n\n"
+        "请按系统要求输出结构化 JSON。"
+    )
+    messages = [
+        {"role": "system", "content": _SUMMARY_SYSTEM},
+        {"role": "user", "content": user_prompt},
+    ]
+    content = _call_chat(messages, cfg, "summary_failed", response_format={"type": "json_object"})
+
+    fallback = {
+        "summary": p.abstract.strip(),
+        "method": "",
+        "result": "",
+        "keywords": _split_keywords(p.keywords),
+    }
+    content = _strip_codefence(content or "")
+    data: Optional[Dict[str, Any]] = None
+    if content:
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            m = re.search(r"\{[\s\S]*\}", content)
+            if m:
+                try:
+                    data = json.loads(m.group(0))
+                except json.JSONDecodeError:
+                    data = None
+    if not isinstance(data, dict):
+        return fallback
+
+    kws = data.get("keywords")
+    if isinstance(kws, str):
+        kws = _split_keywords(kws)
+    elif isinstance(kws, list):
+        kws = [str(x).strip() for x in kws if str(x).strip()]
+    else:
+        kws = []
+    if not kws:
+        kws = fallback["keywords"]
+
+    return {
+        "summary": str(data.get("summary") or fallback["summary"]).strip(),
+        "method": str(data.get("method") or "").strip(),
+        "result": str(data.get("result") or "").strip(),
+        "keywords": kws,
+    }
+
+
+# --- mindmap (T5 思维导图) ---
+
+
+_MINDMAP_SYSTEM = (
+    "你是学术论文思维导图生成助手。请基于提供的论文，输出一段合法的 Mermaid mindmap 代码。\n"
+    "硬性要求：\n"
+    "1. 只输出 mindmap 代码本身，第一行必须是 mindmap。\n"
+    "2. 不要输出任何 ``` 代码围栏，不要任何解释文字。\n"
+    "3. 根节点为论文主题，建议分支：研究背景、研究方法、数据、主要发现、结论、关键词。\n"
+    "4. 缩进表示层级，节点文本不要包含会破坏 mermaid 语法的特殊字符。"
+)
+
+
+def _strip_mermaid_fence(text: str) -> str:
+    s = (text or "").strip()
+    if s.startswith("```"):
+        s = re.sub(r"^```[a-zA-Z]*\s*", "", s)
+        s = re.sub(r"\s*```\s*$", "", s)
+        s = s.strip()
+    # 去掉残留的行内围栏
+    s = s.replace("```mermaid", "").replace("```", "").strip()
+    if not s.startswith("mindmap"):
+        idx = s.find("mindmap")
+        if idx >= 0:
+            s = s[idx:].strip()
+        else:
+            s = "mindmap\n" + s
+    return s
+
+
+@app.post("/mindmap")
+def mindmap(req: SummaryRequest) -> Dict[str, Any]:
+    p = req.paper
+    cfg = _llm_config()
+    _require_llm(cfg)
+
+    full_text = (p.full_text or "").strip()
+    if len(full_text) > 6000:
+        full_text = full_text[:6000] + "…"
+    body = full_text or p.abstract.strip() or "（未提供全文）"
+    user_prompt = (
+        f"{_paper_header(p)}\n\n"
+        f"论文全文：\n{body}\n\n"
+        "请输出该论文的 Mermaid mindmap 代码。"
+    )
+    messages = [
+        {"role": "system", "content": _MINDMAP_SYSTEM},
+        {"role": "user", "content": user_prompt},
+    ]
+    content = _call_chat(messages, cfg, "mindmap_failed")
+    mermaid = _strip_mermaid_fence(content or "")
+    if not mermaid or mermaid == "mindmap":
+        title = p.title.strip() or p.paper_id or "论文"
+        mermaid = f"mindmap\n  root(({title}))"
+    return {"mermaid": mermaid}
+
+
+# --- chat (T5 ai 同读) ---
+
+
+_CHAT_SYSTEM = (
+    "你是针对单篇论文的阅读助手。\n"
+    "硬性规则：\n"
+    "1. 只能基于提供的这篇论文内容（标题/摘要/研究设计/全文）回答用户问题。\n"
+    "2. 论文未涉及的内容，必须回答“该论文未提供相关信息”，严禁编造。\n"
+    "3. 可以引用论文原文片段以支撑回答。\n"
+    "输出语言：简体中文。"
+)
+
+
+def _pick_snippets(full_text: str, question: str, max_n: int = 3) -> List[str]:
+    text = (full_text or "").strip()
+    q = (question or "").strip()
+    if not text or not q:
+        return []
+    paras = [s.strip() for s in re.split(r"\n{2,}|\n", text) if s.strip()]
+    terms = [t for t in _split_keywords(q) if len(t) >= 2]
+    if not terms:
+        return []
+    snippets: List[str] = []
+    for para in paras:
+        if any(t in para for t in terms):
+            snip = para if len(para) <= 300 else para[:300] + "…"
+            snippets.append(snip)
+            if len(snippets) >= max_n:
+                break
+    return snippets
+
+
+@app.post("/chat")
+def chat_single(req: ChatPaperRequest) -> Dict[str, Any]:
+    p = req.paper
+    question = (req.question or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail={"error": "empty_question"})
+    cfg = _llm_config()
+    _require_llm(cfg)
+
+    full_text = (p.full_text or "").strip()
+    if len(full_text) > 8000:
+        full_text = full_text[:8000] + "…"
+    design = p.research_design_text.strip() or "（未提供）"
+    body = full_text or "（未提供全文）"
+    user_prompt = (
+        f"{_paper_header(p)}\n\n"
+        f"研究设计原文: {design}\n\n"
+        f"论文全文：\n{body}\n\n"
+        f"用户问题：{question}\n\n"
+        "请仅基于这篇论文作答。"
+    )
+    messages = [
+        {"role": "system", "content": _CHAT_SYSTEM},
+        {"role": "user", "content": user_prompt},
+    ]
+    answer = _call_chat(messages, cfg, "chat_failed")
+    snippets = _pick_snippets(p.full_text or "", question)
+    return {"answer": answer or "", "evidence_snippets": snippets}
+
+
 # --- analyze ---
 
 

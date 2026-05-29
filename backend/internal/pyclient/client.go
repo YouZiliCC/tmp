@@ -124,6 +124,80 @@ func (c *Client) Generate(ctx context.Context, req GenerateRequest) (*GenerateRe
 	return &resp, nil
 }
 
+// PaperContext 是论文详情页智能体所需的完整论文上下文。
+type PaperContext struct {
+	PaperID            string `json:"paper_id"`
+	Title              string `json:"title"`
+	Author             string `json:"author"`
+	DOI                string `json:"doi"`
+	PublishYear        int    `json:"publish_year"`
+	Journal            string `json:"journal"`
+	Keywords           string `json:"keywords"`
+	Abstract           string `json:"abstract"`
+	ResearchDesignText string `json:"research_design_text"`
+	FullText           string `json:"full_text"`
+}
+
+type SummaryResult struct {
+	Summary  string   `json:"summary"`
+	Method   string   `json:"method"`
+	Result   string   `json:"result"`
+	Keywords []string `json:"keywords"`
+}
+
+type ChatResult struct {
+	Answer           string   `json:"answer"`
+	EvidenceSnippets []string `json:"evidence_snippets"`
+}
+
+// QA 基于检索证据直接回答用户问题（非综述）。
+func (c *Client) QA(ctx context.Context, question string, papers []GeneratePaper, evidenceSufficient bool) (string, error) {
+	req := map[string]any{
+		"question":            question,
+		"papers":              papers,
+		"evidence_sufficient": evidenceSufficient,
+	}
+	var resp struct {
+		Answer string `json:"answer"`
+	}
+	if err := c.postJSON(ctx, "/qa", req, &resp); err != nil {
+		return "", err
+	}
+	return resp.Answer, nil
+}
+
+// Summary 生成单篇论文的结构化概要。
+func (c *Client) Summary(ctx context.Context, paper PaperContext) (*SummaryResult, error) {
+	req := map[string]any{"paper": paper}
+	var resp SummaryResult
+	if err := c.postJSON(ctx, "/summary", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// Mindmap 生成单篇论文的 mermaid mindmap 代码。
+func (c *Client) Mindmap(ctx context.Context, paper PaperContext) (string, error) {
+	req := map[string]any{"paper": paper}
+	var resp struct {
+		Mermaid string `json:"mermaid"`
+	}
+	if err := c.postJSON(ctx, "/mindmap", req, &resp); err != nil {
+		return "", err
+	}
+	return resp.Mermaid, nil
+}
+
+// Chat 基于单篇论文上下文回答用户问题。
+func (c *Client) Chat(ctx context.Context, paper PaperContext, question string) (*ChatResult, error) {
+	req := map[string]any{"paper": paper, "question": question}
+	var resp ChatResult
+	if err := c.postJSON(ctx, "/chat", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // Analyze 通用分析入口。
 func (c *Client) Analyze(ctx context.Context, kind string, params map[string]any) (map[string]any, error) {
 	req := map[string]any{"kind": kind, "params": params}

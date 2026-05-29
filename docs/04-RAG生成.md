@@ -1,5 +1,17 @@
 # 第四部分：大模型 RAG 生成模块 —— 系统数据流线框图
 
+> 实现说明 / Implementation Note
+>
+> 本章描述 Top5 RAG 综述生成的拼装与生成思路，已落地为 `POST /api/analyze/generate`（综述 Prompt 本轮保持不动）。落地差异如下：
+>
+> | 本章设计（早期） | 当前真实实现 | 说明 |
+> | --- | --- | --- |
+> | 切块向量回查 ChromaDB | 从 SQLite 取该篇 chunk 向量，用 query 向量算余弦挑最高分 chunk（失败降级取最长 chunk） | 见 02 章实现说明 |
+> | 整段文本读 MySQL 主表 | 读 SQLite `papers_master.research_design_text` | 同库 |
+> | LLM 为 qwen-max / GPT-4o | **火山方舟 DeepSeek**（`deepseek-v3-2-251201`，OpenAI 兼容），temperature 0.2 | 见 00 章技术栈表 |
+>
+> 本轮新增：综述能力被明确定位为「文献综述功能」，并补齐自动 / 自选两种模式（`/api/review/auto`、`/api/review/manual`，复用本章综述 Prompt 不改）；另新增「智能问答」用独立 QA Prompt 直接回答问题。两者均见 06 章（T3 / T4）。
+
 ## 1. Top N 核心文献截断机制
 
 - 输入来自第三部分输出的已过滤黄金排行榜，形式为论文 ID 数组，例如：`["PAPER_001", "PAPER_089", "PAPER_012", ...]`

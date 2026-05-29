@@ -1,32 +1,22 @@
-import { normScore } from "../lib/format";
-
-interface ScoreBarProps {
+interface Props {
   score: number;
   max?: number;
-  /** rendered width of bar in px */
-  width?: number;
-  showNumber?: boolean;
-  className?: string;
 }
 
-export default function ScoreBar({
-  score,
-  max = 1,
-  width = 120,
-  showNumber = true,
-  className = "",
-}: ScoreBarProps) {
-  const ratio = normScore(score, max);
+/** Thin cyan score meter with mono numeric readout. */
+export default function ScoreBar({ score, max = 1 }: Props) {
+  const pct = max > 0 ? Math.max(0, Math.min(1, score / max)) * 100 : 0;
   return (
-    <div className={`flex items-center gap-3 ${className}`}>
-      <div className="score-rail" style={{ width }}>
-        <div className="score-fill" style={{ width: `${ratio * 100}%` }} />
+    <div className="flex items-center gap-2 w-32">
+      <div className="flex-1 h-[3px] bg-bg-2 border border-line">
+        <div
+          className="h-full bg-cyan"
+          style={{ width: `${pct}%`, boxShadow: "0 0 8px rgba(78,205,196,0.5)" }}
+        />
       </div>
-      {showNumber && (
-        <span className="font-mono text-[0.78rem] tnum text-ink-2">
-          {score.toFixed(3)}
-        </span>
-      )}
+      <span className="mono text-xs text-amber tnum w-10 text-right">
+        {score.toFixed(2)}
+      </span>
     </div>
   );
 }
