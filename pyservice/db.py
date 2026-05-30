@@ -33,11 +33,24 @@ def connect(path: str) -> sqlite3.Connection:
 
 
 def ensure_schema(conn: sqlite3.Connection, schema_path: Optional[str] = None) -> None:
-    """执行 backend/migrations/001_init.sql 全文（幂等）。"""
+    """执行 backend/migrations/001_init.sql 全文（幂等），并补齐增量列。"""
     path = Path(schema_path) if schema_path else _SCHEMA_PATH
     sql_text = path.read_text(encoding="utf-8")
     conn.executescript(sql_text)
+    _ensure_columns(conn)
     conn.commit()
+
+
+def _ensure_columns(conn: sqlite3.Connection) -> None:
+    """对已存在的库幂等补齐新增列（CREATE TABLE IF NOT EXISTS 不会改动旧表）。
+
+    与 backend/migrations/002_affiliation.sql 保持一致。
+    """
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(papers_master)").fetchall()}
+    wanted = {"affiliation": "TEXT"}
+    for col, col_type in wanted.items():
+        if col not in existing:
+            conn.execute(f"ALTER TABLE papers_master ADD COLUMN {col} {col_type}")
 
 
 _PAPER_COLUMNS = (
@@ -49,6 +62,7 @@ _PAPER_COLUMNS = (
     "keywords",
     "abstract",
     "source_journal",
+    "affiliation",
     "research_design_text",
     "title_tokens",
     "keywords_tokens",

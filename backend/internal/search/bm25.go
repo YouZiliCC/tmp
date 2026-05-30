@@ -113,8 +113,17 @@ func (idx *Index) SetAllowed(allowed []string) {
 	}
 }
 
+// AllFields 是全字段激活掩码（title/keywords/abstract/research_design/body）。
+var AllFields = [5]bool{true, true, true, true, true}
+
 // QueryBM25 在所有字段上加权打分。返回降序排列的 Hit 列表。
 func (idx *Index) QueryBM25(query []string, w FieldWeights, topK int) []Hit {
+	return idx.QueryBM25Fields(query, w, AllFields, topK)
+}
+
+// QueryBM25Fields 与 QueryBM25 相同，但只在 active 指定的字段上打分（用于
+// 字段限定检索：题名 / 关键词 / 摘要 / 主题 / 题名或关键词 等）。
+func (idx *Index) QueryBM25Fields(query []string, w FieldWeights, active [5]bool, topK int) []Hit {
 	if len(query) == 0 || idx.docCount == 0 {
 		return nil
 	}
@@ -124,6 +133,9 @@ func (idx *Index) QueryBM25(query []string, w FieldWeights, topK int) []Hit {
 	matchedFlag := make([][5]bool, idx.docCount)
 	uniq := uniqueTokens(query)
 	for f := 0; f < 5; f++ {
+		if !active[f] {
+			continue
+		}
 		stats := idx.fieldStats[f]
 		if stats.avgDL == 0 {
 			continue
@@ -159,8 +171,8 @@ func (idx *Index) QueryBM25(query []string, w FieldWeights, topK int) []Hit {
 		if s <= 0 {
 			continue
 		}
-		// 标题不命中则做强降权
-		if !matchedFlag[i][fTitle] {
+		// 标题不命中则做强降权（仅当标题字段参与本次检索时）
+		if active[fTitle] && !matchedFlag[i][fTitle] {
 			s *= 0.7
 		}
 		var fields []string

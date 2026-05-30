@@ -106,6 +106,7 @@ def _build_paper_record(
     abstract = (meta.get("abstract") or "").strip()
     doi = (meta.get("doi") or "").strip()
     source_journal = (meta.get("source_journal") or "").strip()
+    affiliation = (meta.get("affiliation") or "").strip()
     publish_year = _to_int_year(meta.get("publish_year"))
     research_design_text = parsed.get("research_design_text") or ""
     raw_body = parsed.get("full_text") or ""
@@ -119,6 +120,7 @@ def _build_paper_record(
         "keywords": keywords,
         "abstract": abstract,
         "source_journal": source_journal,
+        "affiliation": affiliation,
         "research_design_text": research_design_text,
         "title_tokens": tokenize_join(title),
         "keywords_tokens": tokenize_join(keywords),

@@ -2,10 +2,24 @@ import { FormEvent, useMemo, useState } from "react";
 import { api } from "../api/client";
 import type {
   Hit,
+  SearchField,
   SmartSearchResponse,
   TraditionalSearchRequest,
   TraditionalSearchResponse,
 } from "../api/types";
+
+const FIELD_OPTIONS: { value: SearchField; label: string }[] = [
+  { value: "all", label: "全部" },
+  { value: "theme", label: "主题" },
+  { value: "title_or_keywords", label: "题名或关键词" },
+  { value: "title", label: "题名" },
+  { value: "first_author", label: "第一作者" },
+  { value: "author", label: "作者" },
+  { value: "affiliation", label: "作者单位" },
+  { value: "keywords", label: "关键词" },
+  { value: "abstract", label: "摘要" },
+  { value: "doi", label: "DOI" },
+];
 import { HttpError } from "../api/client";
 import SectionTitle from "../components/SectionTitle";
 import ResultRow from "../components/ResultRow";
@@ -44,10 +58,8 @@ export default function Search() {
 
 function Traditional() {
   const [q, setQ] = useState("");
-  const [author, setAuthor] = useState("");
+  const [field, setField] = useState<SearchField>("all");
   const [year, setYear] = useState("");
-  const [journal, setJournal] = useState("");
-  const [keywords, setKeywords] = useState("");
   const [sort, setSort] = useState<"relevance" | "year">("relevance");
   const [page, setPage] = useState(1);
   const pageSize = 10;
@@ -63,10 +75,8 @@ function Traditional() {
       const yn = year.trim() ? Number(year.trim()) : undefined;
       const body: TraditionalSearchRequest = {
         q: q || undefined,
-        author: author || undefined,
+        field,
         year: yn && Number.isFinite(yn) ? yn : undefined,
-        journal: journal || undefined,
-        keywords: keywords.trim() || undefined,
         sort,
         page: p,
         page_size: pageSize,
@@ -93,6 +103,14 @@ function Traditional() {
   );
   const total = resp?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const placeholder =
+    field === "doi"
+      ? "10.xxxx/xxxx"
+      : field === "affiliation"
+        ? "如：北京大学"
+        : field === "first_author" || field === "author"
+          ? "作者姓名"
+          : "输入检索词";
 
   return (
     <div className="grid grid-cols-12 gap-6">
@@ -100,11 +118,22 @@ function Traditional() {
       <aside className="col-span-12 md:col-span-4 lg:col-span-3">
         <form onSubmit={onSubmit} className="term-panel p-4 space-y-3 md:sticky md:top-6">
           <div className="kicker">filters · 检索条件</div>
-          <Field label="query · 关键词" value={q} set={setQ} placeholder="任意词" />
-          <Field label="author · 作者" value={author} set={setAuthor} />
+          <label className="block">
+            <span className="kicker">field · 检索字段</span>
+            <select
+              value={field}
+              onChange={(e) => setField(e.target.value as SearchField)}
+              className="input-term mt-1"
+            >
+              {FIELD_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <Field label="query · 检索词" value={q} set={setQ} placeholder={placeholder} />
           <Field label="year · 年份" value={year} set={setYear} mono placeholder="2024" />
-          <Field label="journal · 刊名" value={journal} set={setJournal} />
-          <Field label="keywords · 关键词组" value={keywords} set={setKeywords} placeholder="逗号/空格分隔" />
           <div>
             <div className="kicker mb-1.5">sort · 排序</div>
             <div className="flex gap-2">
@@ -252,9 +281,9 @@ function Smart() {
         <div>
           <div className="flex gap-1 border-b border-line mb-3">
             {([
-              ["golden", `综合榜 ${resp.golden.length}`],
-              ["bm25", `关键词 ${resp.list_bm25.length}`],
-              ["vector", `语义 ${resp.list_vector.length}`],
+              ["golden", "综合榜"],
+              ["bm25", "关键词"],
+              ["vector", "语义"],
             ] as const).map(([k, lbl]) => (
               <button
                 key={k}

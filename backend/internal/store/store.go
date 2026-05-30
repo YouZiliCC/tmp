@@ -25,6 +25,7 @@ type Paper struct {
 	Keywords             string `json:"keywords"`
 	Abstract             string `json:"abstract"`
 	SourceJournal        string `json:"source_journal"`
+	Affiliation          string `json:"affiliation"`
 	ResearchDesignText   string `json:"research_design_text"`
 	TitleTokens          string `json:"-"`
 	KeywordsTokens       string `json:"-"`
@@ -101,11 +102,20 @@ func (d *DB) Migrate(migrationsDir string) error {
 				continue
 			}
 			if _, err := d.Exec(s); err != nil {
+				// 容忍幂等 DDL：重复执行 ALTER ... ADD COLUMN 时两种驱动分别报
+				// "duplicate column name"(sqlite) / "Duplicate column name"(mysql)。
+				if isDuplicateColumnErr(err) {
+					continue
+				}
 				return fmt.Errorf("migration %s: %w\n%s", e.Name(), err, s)
 			}
 		}
 	}
 	return nil
+}
+
+func isDuplicateColumnErr(err error) bool {
+	return strings.Contains(strings.ToLower(err.Error()), "duplicate column name")
 }
 
 func splitSQL(s string) []string {
@@ -122,14 +132,14 @@ func splitSQL(s string) []string {
 
 func (d *DB) UpsertPaper(p Paper) error {
 	q := `INSERT INTO papers_master
-(paper_id,title,doi,publish_year,author,keywords,abstract,source_journal,research_design_text,
+(paper_id,title,doi,publish_year,author,keywords,abstract,source_journal,affiliation,research_design_text,
  title_tokens,keywords_tokens,abstract_tokens,research_design_tokens,body_tokens,raw_body)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 	if d.driver == "sqlite" {
 		q += ` ON CONFLICT(paper_id) DO UPDATE SET
 title=excluded.title, doi=excluded.doi, publish_year=excluded.publish_year,
 author=excluded.author, keywords=excluded.keywords, abstract=excluded.abstract,
-source_journal=excluded.source_journal, research_design_text=excluded.research_design_text,
+source_journal=excluded.source_journal, affiliation=excluded.affiliation, research_design_text=excluded.research_design_text,
 title_tokens=excluded.title_tokens, keywords_tokens=excluded.keywords_tokens,
 abstract_tokens=excluded.abstract_tokens, research_design_tokens=excluded.research_design_tokens,
 body_tokens=excluded.body_tokens, raw_body=excluded.raw_body`
@@ -137,13 +147,13 @@ body_tokens=excluded.body_tokens, raw_body=excluded.raw_body`
 		q += ` ON DUPLICATE KEY UPDATE
 title=VALUES(title), doi=VALUES(doi), publish_year=VALUES(publish_year),
 author=VALUES(author), keywords=VALUES(keywords), abstract=VALUES(abstract),
-source_journal=VALUES(source_journal), research_design_text=VALUES(research_design_text),
+source_journal=VALUES(source_journal), affiliation=VALUES(affiliation), research_design_text=VALUES(research_design_text),
 title_tokens=VALUES(title_tokens), keywords_tokens=VALUES(keywords_tokens),
 abstract_tokens=VALUES(abstract_tokens), research_design_tokens=VALUES(research_design_tokens),
 body_tokens=VALUES(body_tokens), raw_body=VALUES(raw_body)`
 	}
 	_, err := d.Exec(q,
-		p.PaperID, p.Title, p.DOI, p.PublishYear, p.Author, p.Keywords, p.Abstract, p.SourceJournal, p.ResearchDesignText,
+		p.PaperID, p.Title, p.DOI, p.PublishYear, p.Author, p.Keywords, p.Abstract, p.SourceJournal, p.Affiliation, p.ResearchDesignText,
 		p.TitleTokens, p.KeywordsTokens, p.AbstractTokens, p.ResearchDesignTokens, p.BodyTokens, p.RawBody)
 	return err
 }
@@ -152,7 +162,7 @@ body_tokens=VALUES(body_tokens), raw_body=VALUES(raw_body)`
 const paperSelect = `SELECT paper_id,
 COALESCE(title,''), COALESCE(doi,''), COALESCE(publish_year,0),
 COALESCE(author,''), COALESCE(keywords,''), COALESCE(abstract,''),
-COALESCE(source_journal,''), COALESCE(research_design_text,''),
+COALESCE(source_journal,''), COALESCE(affiliation,''), COALESCE(research_design_text,''),
 COALESCE(title_tokens,''), COALESCE(keywords_tokens,''), COALESCE(abstract_tokens,''),
 COALESCE(research_design_tokens,''), COALESCE(body_tokens,''), COALESCE(raw_body,'')
 FROM papers_master`
@@ -161,7 +171,7 @@ func (d *DB) GetPaper(id string) (*Paper, error) {
 	row := d.QueryRow(paperSelect+` WHERE paper_id=?`, id)
 	p := &Paper{}
 	err := row.Scan(&p.PaperID, &p.Title, &p.DOI, &p.PublishYear, &p.Author, &p.Keywords, &p.Abstract, &p.SourceJournal,
-		&p.ResearchDesignText, &p.TitleTokens, &p.KeywordsTokens, &p.AbstractTokens, &p.ResearchDesignTokens, &p.BodyTokens, &p.RawBody)
+		&p.Affiliation, &p.ResearchDesignText, &p.TitleTokens, &p.KeywordsTokens, &p.AbstractTokens, &p.ResearchDesignTokens, &p.BodyTokens, &p.RawBody)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -178,7 +188,7 @@ func (d *DB) AllPapers() ([]Paper, error) {
 	for rows.Next() {
 		var p Paper
 		if err := rows.Scan(&p.PaperID, &p.Title, &p.DOI, &p.PublishYear, &p.Author, &p.Keywords, &p.Abstract, &p.SourceJournal,
-			&p.ResearchDesignText, &p.TitleTokens, &p.KeywordsTokens, &p.AbstractTokens, &p.ResearchDesignTokens, &p.BodyTokens, &p.RawBody); err != nil {
+			&p.Affiliation, &p.ResearchDesignText, &p.TitleTokens, &p.KeywordsTokens, &p.AbstractTokens, &p.ResearchDesignTokens, &p.BodyTokens, &p.RawBody); err != nil {
 			return nil, err
 		}
 		out = append(out, p)

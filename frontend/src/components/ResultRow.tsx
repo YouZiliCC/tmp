@@ -35,6 +35,14 @@ export default function ResultRow({ hit, index, scoreMax = 1 }: Props) {
             <span className="mono text-text-2">{hit.journal || "—"}</span>
             <span className="text-text-3">//</span>
             <span className="mono tnum text-amber">{hit.year || "—"}</span>
+            {hit.affiliation ? (
+              <>
+                <span className="text-text-3">//</span>
+                <span className="text-text-3 truncate max-w-[220px]">
+                  {hit.affiliation.split(/[,，;；、]/)[0]}
+                </span>
+              </>
+            ) : null}
           </div>
           {hit.abstract_preview ? (
             <p className="mt-2 text-[13px] leading-relaxed text-text-2 line-clamp-2">

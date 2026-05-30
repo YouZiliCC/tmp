@@ -1,28 +1,20 @@
-import { useMemo } from "react";
-import { marked } from "marked";
-
-marked.setOptions({ gfm: true, breaks: true });
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 interface Props {
   source: string;
   className?: string;
 }
 
-/** Lightweight markdown renderer with dark prose styling. */
+/**
+ * 统一 Markdown 渲染器：react-markdown + GFM。
+ * 默认不渲染原始 HTML（安全），对流式中半截的 markdown 也能稳定容错渲染。
+ * 暗色排版样式由 `.md` 类（index.css）提供。
+ */
 export default function Markdown({ source, className }: Props) {
-  const html = useMemo(() => {
-    try {
-      return marked.parse(source ?? "", { async: false }) as string;
-    } catch {
-      return (source ?? "").replace(/</g, "&lt;");
-    }
-  }, [source]);
-
   return (
-    <div
-      className={`md ${className ?? ""}`}
-      // marked output; source is trusted backend LLM text
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
+    <div className={`md ${className ?? ""}`}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{source ?? ""}</ReactMarkdown>
+    </div>
   );
 }

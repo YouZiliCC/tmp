@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, HttpError } from "../api/client";
 import type {
-  ChatResponse,
   MindmapResponse,
   Paper,
   RelatedResponse,
@@ -10,12 +9,18 @@ import type {
 } from "../api/types";
 import SectionTitle from "../components/SectionTitle";
 import Loading from "../components/Loading";
+import Markdown from "../components/Markdown";
 import Mindmap from "../components/Mindmap";
 import MatchChips from "../components/MatchChips";
 import ScoreBar from "../components/ScoreBar";
 import { citationGB, joinAuthors, splitKeywords } from "../lib/format";
 
 const FULLTEXT_PREVIEW = 900;
+
+interface SectionRef {
+  id: string;
+  label: string;
+}
 
 export default function PaperDetail() {
   const { id } = useParams<{ id: string }>();
@@ -64,6 +69,14 @@ export default function PaperDetail() {
     doi: paper.doi,
   });
 
+  const sections: SectionRef[] = [
+    paper.abstract && { id: "sec-abstract", label: "摘要" },
+    paper.research_design_text && { id: "sec-design", label: "研究设计" },
+    { id: "sec-fulltext", label: "全文" },
+    paper.chunks?.length ? { id: "sec-chunks", label: "切分段" } : null,
+    { id: "sec-citation", label: "引用" },
+  ].filter(Boolean) as SectionRef[];
+
   function copy() {
     navigator.clipboard?.writeText(citation).then(() => {
       setCopied(true);
@@ -88,6 +101,9 @@ export default function PaperDetail() {
           <span>{paper.source_journal || "—"}</span>
         </div>
         <div className="mt-2 text-sm text-text-2">{joinAuthors(paper.author) || "—"}</div>
+        {paper.affiliation && (
+          <div className="mt-1 text-xs text-text-3">{paper.affiliation}</div>
+        )}
         {kws.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-1.5">
             {kws.map((k) => (
@@ -99,18 +115,23 @@ export default function PaperDetail() {
         )}
       </header>
 
-      <div className="grid grid-cols-12 gap-8">
+      <div className="grid grid-cols-12 gap-6 lg:gap-8">
+        {/* left TOC */}
+        <aside className="hidden lg:block lg:col-span-2">
+          <SectionNav sections={sections} />
+        </aside>
+
         {/* main column */}
-        <div className="col-span-12 lg:col-span-7 space-y-8">
+        <div className="col-span-12 lg:col-span-6 space-y-8">
           {paper.abstract && (
-            <section>
+            <section id="sec-abstract" className="scroll-mt-6">
               <SectionTitle>abstract · 摘要</SectionTitle>
               <p className="text-[14px] leading-relaxed text-text-2 whitespace-pre-wrap">{paper.abstract}</p>
             </section>
           )}
 
           {paper.research_design_text && (
-            <section>
+            <section id="sec-design" className="scroll-mt-6">
               <SectionTitle>research design · 研究设计</SectionTitle>
               <p className="text-[14px] leading-relaxed text-text-2 whitespace-pre-wrap">
                 {paper.research_design_text}
@@ -119,7 +140,7 @@ export default function PaperDetail() {
           )}
 
           {/* T1: continuous full text */}
-          <section>
+          <section id="sec-fulltext" className="scroll-mt-6">
             <SectionTitle>full text · 全文原文</SectionTitle>
             {full ? (
               <div className="term-panel p-5">
@@ -140,7 +161,7 @@ export default function PaperDetail() {
 
           {/* chunks moved to secondary collapsed area */}
           {paper.chunks?.length > 0 && (
-            <section>
+            <section id="sec-chunks" className="scroll-mt-6">
               <button
                 onClick={() => setShowChunks((v) => !v)}
                 className="section-title hover:text-cyan transition-colors"
@@ -166,7 +187,7 @@ export default function PaperDetail() {
           )}
 
           {/* citation */}
-          <section className="border-t border-line pt-5">
+          <section id="sec-citation" className="border-t border-line pt-5 scroll-mt-6">
             <SectionTitle
               right={
                 <button onClick={copy} className="btn-term">
@@ -181,13 +202,57 @@ export default function PaperDetail() {
         </div>
 
         {/* agent panel */}
-        <div className="col-span-12 lg:col-span-5">
+        <div className="col-span-12 lg:col-span-4">
           <div className="lg:sticky lg:top-6">
             <AgentPanel paper={paper} />
           </div>
         </div>
       </div>
     </div>
+  );
+}
+
+/* ----------------------- section nav (左侧目录) ----------------------- */
+
+function SectionNav({ sections }: { sections: SectionRef[] }) {
+  const [active, setActive] = useState(sections[0]?.id ?? "");
+
+  useEffect(() => {
+    const obs = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (visible[0]) setActive(visible[0].target.id);
+      },
+      { rootMargin: "-15% 0px -70% 0px", threshold: 0 },
+    );
+    sections.forEach((s) => {
+      const el = document.getElementById(s.id);
+      if (el) obs.observe(el);
+    });
+    return () => obs.disconnect();
+  }, [sections]);
+
+  return (
+    <nav className="lg:sticky lg:top-6 space-y-1">
+      <div className="kicker mb-2">目录 · contents</div>
+      {sections.map((s) => (
+        <a
+          key={s.id}
+          href={`#${s.id}`}
+          onClick={(e) => {
+            e.preventDefault();
+            document.getElementById(s.id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+          }}
+          className={`block text-sm py-1 px-2 border-l-2 transition-colors ${
+            active === s.id ? "border-cyan text-cyan" : "border-line text-text-3 hover:text-text-2"
+          }`}
+        >
+          {s.label}
+        </a>
+      ))}
+    </nav>
   );
 }
 
@@ -284,16 +349,49 @@ function Block({ label, text }: { label: string; text: string }) {
   return (
     <div>
       <div className="kicker mb-1">{label}</div>
-      <p className="text-[13px] leading-relaxed text-text-2 whitespace-pre-wrap">{text}</p>
+      <Markdown source={text} className="text-[13px]" />
     </div>
   );
 }
 
 function ChatTab({ id }: { id: string }) {
   const [question, setQuestion] = useState("");
-  const { loading, err, data, go } = useAgent<ChatResponse>(() =>
-    api.paperChat(id, { question: question.trim() }),
-  );
+  const [answer, setAnswer] = useState("");
+  const [snippets, setSnippets] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [streaming, setStreaming] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [started, setStarted] = useState(false);
+
+  async function go() {
+    if (!question.trim()) return;
+    setAnswer("");
+    setSnippets([]);
+    setErr(null);
+    setLoading(true);
+    setStreaming(true);
+    setStarted(true);
+    try {
+      await api.paperChatStream(
+        id,
+        { question: question.trim() },
+        {
+          onMeta: (m) => setSnippets(m.evidence_snippets ?? []),
+          onDelta: (t) => {
+            setLoading(false);
+            setAnswer((a) => a + t);
+          },
+          onError: (msg) => setErr(msg),
+        },
+      );
+    } catch (e) {
+      setErr(e instanceof HttpError ? e.message : String(e));
+    } finally {
+      setLoading(false);
+      setStreaming(false);
+    }
+  }
+
   return (
     <div className="space-y-3">
       <textarea
@@ -303,19 +401,22 @@ function ChatTab({ id }: { id: string }) {
         placeholder="就这篇论文提问，例如：本文的核心论点是什么？"
         className="input-term resize-y font-sans"
       />
-      <button className="btn-term btn-primary w-full justify-center" disabled={loading || !question.trim()} onClick={go}>
-        {loading ? "thinking…" : "▸ 提问"}
+      <button className="btn-term btn-primary w-full justify-center" disabled={streaming || !question.trim()} onClick={go}>
+        {streaming ? "thinking…" : "▸ 提问"}
       </button>
       {loading && <Loading label="READING" />}
       {err && <AgentError msg={err} />}
-      {data && (
+      {started && (answer || (streaming && !loading)) && (
         <div className="fade-in space-y-2">
-          <p className="text-[13px] leading-relaxed text-text whitespace-pre-wrap">{data.answer}</p>
-          {data.evidence_snippets?.length > 0 && (
+          <div>
+            <Markdown source={answer} className="text-[13px]" />
+            {streaming && <span className="animate-pulse text-cyan">▍</span>}
+          </div>
+          {snippets.length > 0 && (
             <details className="mt-2">
               <summary className="kicker text-cyan cursor-pointer">▸ 原文依据</summary>
               <div className="mt-2 space-y-2">
-                {data.evidence_snippets.map((s, i) => (
+                {snippets.map((s, i) => (
                   <p key={i} className="text-[12px] leading-relaxed text-text-2 border-l-2 border-line-2 pl-3 whitespace-pre-wrap">
                     {s}
                   </p>
@@ -342,7 +443,9 @@ function MindmapTab({ id }: { id: string }) {
       {err && <AgentError msg={err} />}
       {data && (
         <div className="fade-in space-y-3">
-          <Mindmap code={data.mermaid} />
+          <div className="border border-line rounded-sm bg-bg overflow-hidden">
+            <Mindmap markdown={data.markdown} />
+          </div>
           <button className="btn-term w-full justify-center" onClick={go}>
             ↻ 重新生成
           </button>

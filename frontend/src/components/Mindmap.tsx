@@ -1,53 +1,48 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
+import { Transformer } from "markmap-lib";
+import { Markmap } from "markmap-view";
 
 interface Props {
-  code: string;
+  /** markmap 大纲（Markdown：一级标题为根，二级标题为主分支，- 列表为要点）。 */
+  markdown: string;
 }
 
-/** Renders mermaid mindmap code into SVG with a dark theme; falls back to raw code on error. */
-export default function Mindmap({ code }: Props) {
-  const hostRef = useRef<HTMLDivElement>(null);
-  const [failed, setFailed] = useState(false);
-  const rawId = useId().replace(/[^a-zA-Z0-9]/g, "");
+const transformer = new Transformer();
+
+/** 用 markmap 把 Markdown 大纲渲染为可展开/收起的真·思维导图（暗色）。 */
+export default function Mindmap({ markdown }: Props) {
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const mmRef = useRef<Markmap | null>(null);
 
   useEffect(() => {
-    let cancelled = false;
-    setFailed(false);
-    (async () => {
-      try {
-        const mermaid = (await import("mermaid")).default;
-        mermaid.initialize({
-          startOnLoad: false,
-          theme: "dark",
-          themeVariables: {
-            background: "#11151f",
-            primaryColor: "#161b26",
-            primaryBorderColor: "#4ecdc4",
-            primaryTextColor: "#e4e7ec",
-            lineColor: "#5c6675",
-            fontFamily: "Sora, Noto Sans SC, sans-serif",
-          },
-        });
-        const clean = code.replace(/^```(?:mermaid)?\s*/i, "").replace(/```$/i, "").trim();
-        const { svg } = await mermaid.render(`mm-${rawId}`, clean);
-        if (!cancelled && hostRef.current) {
-          hostRef.current.innerHTML = svg;
-        }
-      } catch {
-        if (!cancelled) setFailed(true);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [code, rawId]);
+    if (!svgRef.current) return;
+    const { root } = transformer.transform(markdown?.trim() || "# 论文");
+    if (!mmRef.current) {
+      mmRef.current = Markmap.create(
+        svgRef.current,
+        {
+          duration: 300,
+          spacingVertical: 8,
+          spacingHorizontal: 90,
+          paddingX: 12,
+          color: () => "#4ecdc4",
+          fitRatio: 0.95,
+        },
+        root
+      );
+    } else {
+      mmRef.current.setData(root);
+      mmRef.current.fit();
+    }
+  }, [markdown]);
 
-  if (failed) {
-    return (
-      <pre className="md text-xs overflow-x-auto border border-line-2 rounded-sm p-3 bg-bg">
-        <code>{code}</code>
-      </pre>
-    );
-  }
-  return <div ref={hostRef} className="mermaid-host overflow-x-auto" />;
+  useEffect(
+    () => () => {
+      mmRef.current?.destroy();
+      mmRef.current = null;
+    },
+    []
+  );
+
+  return <svg ref={svgRef} className="markmap-svg w-full" style={{ height: 380 }} />;
 }

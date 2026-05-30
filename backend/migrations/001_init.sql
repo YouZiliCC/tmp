@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS papers_master (
     keywords             TEXT,
     abstract             TEXT,
     source_journal       TEXT,
+    affiliation          TEXT,
     research_design_text TEXT,
     title_tokens         TEXT,
     keywords_tokens      TEXT,

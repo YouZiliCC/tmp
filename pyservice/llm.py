@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 
 def chat(
@@ -42,4 +42,32 @@ def chat(
     return content or ""
 
 
-__all__ = ["chat"]
+def chat_stream(
+    messages: List[Dict[str, str]],
+    model: str,
+    temperature: float = 0.2,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    timeout: Optional[float] = 300.0,
+) -> Iterator[str]:
+    """流式调用 chat completion，逐块 yield message.content 增量文本。"""
+    from openai import OpenAI  # lazy import
+
+    client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
+    stream = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=temperature,
+        stream=True,
+    )
+    for chunk in stream:
+        choices = getattr(chunk, "choices", None)
+        if not choices:
+            continue
+        delta = getattr(choices[0], "delta", None)
+        text = getattr(delta, "content", None) if delta is not None else None
+        if text:
+            yield text
+
+
+__all__ = ["chat", "chat_stream"]

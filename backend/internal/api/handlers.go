@@ -74,6 +74,78 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+// sseStart 切换响应为 SSE 并返回一个 send(event,data) 闭包。
+// 一旦调用，状态码即固定为 200，因此必须在所有可能失败的前置步骤（检索等）之后再调用。
+func sseStart(w http.ResponseWriter) (send func(event string, data any), ok bool) {
+	fl, ok := w.(http.Flusher)
+	if !ok {
+		return nil, false
+	}
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // 关闭 nginx 缓冲
+	w.WriteHeader(http.StatusOK)
+	fl.Flush()
+	send = func(event string, data any) {
+		b, _ := json.Marshal(data)
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
+		fl.Flush()
+	}
+	return send, true
+}
+
+// pickSnippets 在 fullText 中找包含问题关键词的段落，作为 AI 同读的原文依据。
+// 与 pyservice.main._pick_snippets 行为保持一致（流式路径下证据片段改由 Go 计算）。
+func pickSnippets(fullText, question string, maxN int) []string {
+	text := strings.TrimSpace(fullText)
+	if text == "" || strings.TrimSpace(question) == "" {
+		return nil
+	}
+	sep := func(r rune) bool {
+		switch r {
+		case ',', '，', ';', '；', '、', ' ', '\t', '\n', '\r', '　':
+			return true
+		}
+		return false
+	}
+	var terms []string
+	for _, t := range strings.FieldsFunc(question, sep) {
+		if len([]rune(t)) >= 2 {
+			terms = append(terms, t)
+		}
+	}
+	if len(terms) == 0 {
+		return nil
+	}
+	var out []string
+	for _, para := range strings.Split(text, "\n") {
+		para = strings.TrimSpace(para)
+		if para == "" {
+			continue
+		}
+		matched := false
+		for _, t := range terms {
+			if strings.Contains(para, t) {
+				matched = true
+				break
+			}
+		}
+		if matched {
+			r := []rune(para)
+			snip := para
+			if len(r) > 300 {
+				snip = string(r[:300]) + "…"
+			}
+			out = append(out, snip)
+			if len(out) >= maxN {
+				break
+			}
+		}
+	}
+	return out
+}
+
 // --- handlers ---
 
 func (h *Handlers) Health(w http.ResponseWriter, r *http.Request) {
@@ -114,10 +186,8 @@ func (h *Handlers) Stats(w http.ResponseWriter, r *http.Request) {
 
 type traditionalRequest struct {
 	Q        string `json:"q"`
-	Author   string `json:"author"`
+	Field    string `json:"field"` // all|theme|title_or_keywords|title|first_author|author|affiliation|keywords|abstract|doi
 	Year     int    `json:"year"`
-	Journal  string `json:"journal"`
-	Keywords string `json:"keywords"`
 	Page     int    `json:"page"`
 	PageSize int    `json:"page_size"`
 	Sort     string `json:"sort"`
@@ -132,8 +202,46 @@ type hitView struct {
 	Author          string   `json:"author"`
 	Year            int      `json:"year"`
 	Journal         string   `json:"journal"`
+	Affiliation     string   `json:"affiliation"`
 	AbstractPreview string   `json:"abstract_preview"`
 	Keywords        string   `json:"keywords"`
+}
+
+// fieldPlan 把前端字段标识映射为「BM25 文本字段掩码」或「SQL 元数据列」。
+// isText=true 表示走 BM25（title/keywords/abstract/research_design/body）。
+func fieldPlan(field string) (active [5]bool, isText bool, metaCol string) {
+	switch strings.TrimSpace(field) {
+	case "", "all": // 全部
+		return search.AllFields, true, ""
+	case "theme": // 主题 = 题名 + 关键词 + 摘要
+		return [5]bool{true, true, true, false, false}, true, ""
+	case "title_or_keywords": // 题名或关键词
+		return [5]bool{true, true, false, false, false}, true, ""
+	case "title": // 题名
+		return [5]bool{true, false, false, false, false}, true, ""
+	case "keywords": // 关键词
+		return [5]bool{false, true, false, false, false}, true, ""
+	case "abstract": // 摘要
+		return [5]bool{false, false, true, false, false}, true, ""
+	case "author": // 作者（任意作者）
+		return [5]bool{}, false, "author"
+	case "first_author": // 第一作者（作者串首位）
+		return [5]bool{}, false, "first_author"
+	case "affiliation": // 作者单位
+		return [5]bool{}, false, "affiliation"
+	case "doi":
+		return [5]bool{}, false, "doi"
+	default:
+		return search.AllFields, true, ""
+	}
+}
+
+func idsToHits(ids []string) []search.Hit {
+	hits := make([]search.Hit, 0, len(ids))
+	for i, id := range ids {
+		hits = append(hits, search.Hit{PaperID: id, Score: 0, Rank: i + 1})
+	}
+	return hits
 }
 
 func abstractPreview(s string) string {
@@ -160,6 +268,7 @@ func (h *Handlers) toHitViews(hits []search.Hit, papers map[string]store.Paper) 
 			Author:          p.Author,
 			Year:            p.PublishYear,
 			Journal:         p.SourceJournal,
+			Affiliation:     p.Affiliation,
 			AbstractPreview: abstractPreview(p.Abstract),
 			Keywords:        p.Keywords,
 		})
@@ -167,31 +276,38 @@ func (h *Handlers) toHitViews(hits []search.Hit, papers map[string]store.Paper) 
 	return out
 }
 
-// filterPaperIDs 按 SQL 过滤 papers_master 得到 allowed paper id 列表。如果没有任何过滤条件返回 (nil,true) 表示全放行。
-func (h *Handlers) filterPaperIDs(author, journal, keywords string, year int) ([]string, bool, error) {
+// filterTraditional 按「年份 + 可选元数据列」过滤得到 allowed paper id 列表。
+// 没有任何过滤条件时返回 (nil,true) 表示全放行。metaCol 为空表示不加元数据条件。
+func (h *Handlers) filterTraditional(metaCol, q string, year int) ([]string, bool, error) {
 	var conds []string
 	var args []any
 	if year > 0 {
 		conds = append(conds, "publish_year = ?")
 		args = append(args, year)
 	}
-	if a := strings.TrimSpace(author); a != "" {
-		conds = append(conds, "author LIKE ?")
-		args = append(args, "%"+a+"%")
-	}
-	if j := strings.TrimSpace(journal); j != "" {
-		conds = append(conds, "source_journal LIKE ?")
-		args = append(args, "%"+j+"%")
-	}
-	if k := strings.TrimSpace(keywords); k != "" {
-		conds = append(conds, "keywords LIKE ?")
-		args = append(args, "%"+k+"%")
+	q = strings.TrimSpace(q)
+	if metaCol != "" && q != "" {
+		switch metaCol {
+		case "first_author":
+			// 第一作者：作者串以该名字开头（逗号分隔，首位即第一作者）
+			conds = append(conds, "TRIM(author) LIKE ?")
+			args = append(args, q+"%")
+		case "doi":
+			conds = append(conds, "doi LIKE ?")
+			args = append(args, "%"+q+"%")
+		case "author":
+			conds = append(conds, "author LIKE ?")
+			args = append(args, "%"+q+"%")
+		case "affiliation":
+			conds = append(conds, "affiliation LIKE ?")
+			args = append(args, "%"+q+"%")
+		}
 	}
 	if len(conds) == 0 {
 		return nil, true, nil
 	}
-	q := "SELECT paper_id FROM papers_master WHERE " + strings.Join(conds, " AND ")
-	rows, err := h.DB.Query(q, args...)
+	sqlText := "SELECT paper_id FROM papers_master WHERE " + strings.Join(conds, " AND ")
+	rows, err := h.DB.Query(sqlText, args...)
 	if err != nil {
 		return nil, false, err
 	}
@@ -224,27 +340,36 @@ func (h *Handlers) SearchTraditional(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "index not ready")
 		return
 	}
-	allowedIDs, all, err := h.filterPaperIDs(req.Author, req.Journal, req.Keywords, req.Year)
+
+	active, isText, metaCol := fieldPlan(req.Field)
+	allowedIDs, all, err := h.filterTraditional(metaCol, req.Q, req.Year)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "filter: "+err.Error())
 		return
 	}
-	if !all {
-		idx.SetAllowed(allowedIDs)
-	} else {
-		idx.SetAllowed(nil)
-	}
-	tokens := search.Tokenize(req.Q)
+
 	var hits []search.Hit
-	if len(tokens) > 0 {
-		hits = idx.QueryBM25(tokens, search.DefaultFieldWeights(), 200)
-	} else if !all {
-		// 无关键词但有过滤：返回过滤后的论文（按 paper_id 排序）
-		hits = make([]search.Hit, 0, len(allowedIDs))
-		for i, id := range allowedIDs {
-			hits = append(hits, search.Hit{PaperID: id, Score: 0, Rank: i + 1})
+	if isText {
+		// 文本字段：BM25（按字段掩码）。年份过滤通过白名单实现。
+		if !all {
+			idx.SetAllowed(allowedIDs)
+		} else {
+			idx.SetAllowed(nil)
+		}
+		tokens := search.Tokenize(req.Q)
+		if len(tokens) > 0 {
+			hits = idx.QueryBM25Fields(tokens, search.DefaultFieldWeights(), active, 200)
+		} else if !all {
+			// 无关键词但有年份过滤：返回过滤后的论文
+			hits = idsToHits(allowedIDs)
+		}
+	} else {
+		// 元数据字段（作者/第一作者/作者单位/DOI）：SQL 过滤结果即检索结果。
+		if !all {
+			hits = idsToHits(allowedIDs)
 		}
 	}
+
 	if req.Sort == "year" {
 		sort.SliceStable(hits, func(i, j int) bool {
 			return papers[hits[i].PaperID].PublishYear > papers[hits[j].PaperID].PublishYear
@@ -266,8 +391,8 @@ func (h *Handlers) SearchTraditional(w http.ResponseWriter, r *http.Request) {
 	views := h.toHitViews(page, papers)
 
 	filters, _ := json.Marshal(map[string]any{
-		"author": req.Author, "year": req.Year, "journal": req.Journal,
-		"keywords": req.Keywords, "page": req.Page, "page_size": req.PageSize, "sort": req.Sort,
+		"field": req.Field, "year": req.Year,
+		"page": req.Page, "page_size": req.PageSize, "sort": req.Sort,
 	})
 	if err := h.DB.AddHistory("traditional", req.Q, string(filters)); err != nil {
 		log.Printf("[history] add: %v", err)
@@ -647,6 +772,7 @@ func (h *Handlers) GetPaper(w http.ResponseWriter, r *http.Request) {
 		"keywords":             p.Keywords,
 		"abstract":             p.Abstract,
 		"source_journal":       p.SourceJournal,
+		"affiliation":          p.Affiliation,
 		"research_design_text": p.ResearchDesignText,
 		"full_text":            p.RawBody,
 		"chunks":               cvs,
@@ -829,12 +955,6 @@ func (h *Handlers) QAAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	genPapers := h.buildGeneratePapers(ctx, q, ids, 0)
 
-	answer, err := h.Py.QA(ctx, q, genPapers, evidenceSufficient)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "qa: "+err.Error())
-		return
-	}
-
 	bmSet := idSet(res.ListBM25)
 	vecSet := idSet(res.ListVector)
 	scoreByID := make(map[string]float64, len(selected))
@@ -862,11 +982,25 @@ func (h *Handlers) QAAnswer(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[history] add: %v", err)
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"answer":              answer,
-		"evidence_sufficient": evidenceSufficient,
-		"references":          references,
-	})
+	send, ok := sseStart(w)
+	if !ok {
+		answer, err := h.Py.QA(ctx, q, genPapers, evidenceSufficient)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "qa: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"answer": answer, "evidence_sufficient": evidenceSufficient, "references": references,
+		})
+		return
+	}
+	send("meta", map[string]any{"evidence_sufficient": evidenceSufficient, "references": references})
+	if err := h.Py.QAStream(ctx, q, genPapers, evidenceSufficient, func(d string) {
+		send("delta", map[string]any{"text": d})
+	}); err != nil {
+		send("error", map[string]any{"message": err.Error()})
+	}
+	send("done", map[string]any{})
 }
 
 type reviewAutoRequest struct {
@@ -902,23 +1036,34 @@ func (h *Handlers) ReviewAuto(w http.ResponseWriter, r *http.Request) {
 		ids = append(ids, hi.PaperID)
 	}
 	genPapers := h.buildGeneratePapers(ctx, q, ids, 0)
+	citations := citationsFromGenPapers(genPapers)
 
-	resp, err := h.Py.Generate(ctx, pyclient.GenerateRequest{Query: q, Papers: genPapers})
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "generate: "+err.Error())
+	send, ok := sseStart(w)
+	if !ok {
+		resp, err := h.Py.Generate(ctx, pyclient.GenerateRequest{Query: q, Papers: genPapers})
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "generate: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"answer": resp.Answer, "citations": citations})
 		return
 	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"answer":    resp.Answer,
-		"citations": citationsFromGenPapers(genPapers),
-	})
+	send("meta", map[string]any{"citations": citations, "matched": nil})
+	if err := h.Py.GenerateStream(ctx, pyclient.GenerateRequest{Query: q, Papers: genPapers}, func(d string) {
+		send("delta", map[string]any{"text": d})
+	}); err != nil {
+		send("error", map[string]any{"message": err.Error()})
+	}
+	send("done", map[string]any{})
 }
 
 type reviewManualRequest struct {
-	DOI   string `json:"doi"`
-	Title string `json:"title"`
-	Text  string `json:"text"`
+	DOI     string `json:"doi"`
+	Title   string `json:"title"`
+	Text    string `json:"text"`
+	Author  string `json:"author"`
+	Year    int    `json:"year"`
+	Journal string `json:"journal"`
 }
 
 func (h *Handlers) ReviewManual(w http.ResponseWriter, r *http.Request) {
@@ -936,14 +1081,21 @@ func (h *Handlers) ReviewManual(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(req.Title)
 
 	if t := strings.TrimSpace(req.Text); t != "" {
+		title := strings.TrimSpace(req.Title)
+		if title == "" {
+			title = "用户提供文本"
+		}
 		genPapers = []pyclient.GeneratePaper{{
-			Title:              "用户提供文本",
+			Title:              title,
+			Author:             strings.TrimSpace(req.Author),
+			DOI:                strings.TrimSpace(req.DOI),
+			PublishYear:        req.Year,
 			ResearchDesignText: t,
 			Abstract:           t,
 			TopChunkText:       t,
 		}}
 		if query == "" {
-			query = "用户提供文本"
+			query = title
 		}
 		matched = nil
 	} else {
@@ -974,17 +1126,24 @@ func (h *Handlers) ReviewManual(w http.ResponseWriter, r *http.Request) {
 		matched = map[string]any{"paper_id": found.PaperID, "title": found.Title}
 	}
 
-	resp, err := h.Py.Generate(ctx, pyclient.GenerateRequest{Query: query, Papers: genPapers})
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "generate: "+err.Error())
+	citations := citationsFromGenPapers(genPapers)
+	send, ok := sseStart(w)
+	if !ok {
+		resp, err := h.Py.Generate(ctx, pyclient.GenerateRequest{Query: query, Papers: genPapers})
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "generate: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"answer": resp.Answer, "citations": citations, "matched": matched})
 		return
 	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"answer":    resp.Answer,
-		"citations": citationsFromGenPapers(genPapers),
-		"matched":   matched,
-	})
+	send("meta", map[string]any{"citations": citations, "matched": matched})
+	if err := h.Py.GenerateStream(ctx, pyclient.GenerateRequest{Query: query, Papers: genPapers}, func(d string) {
+		send("delta", map[string]any{"text": d})
+	}); err != nil {
+		send("error", map[string]any{"message": err.Error()})
+	}
+	send("done", map[string]any{})
 }
 
 // paperContext 取论文并组装 PaperContext（含 FullText=RawBody）。论文不存在返回 nil。
@@ -1032,15 +1191,29 @@ func (h *Handlers) PaperChat(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
-	res, err := h.Py.Chat(ctx, *pc, req.Question)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "chat: "+err.Error())
+
+	question := strings.TrimSpace(req.Question)
+	snippets := pickSnippets(pc.FullText, question, 3)
+
+	send, ok := sseStart(w)
+	if !ok {
+		res, err := h.Py.Chat(ctx, *pc, req.Question)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "chat: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"answer": res.Answer, "evidence_snippets": res.EvidenceSnippets,
+		})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"answer":            res.Answer,
-		"evidence_snippets": res.EvidenceSnippets,
-	})
+	send("meta", map[string]any{"evidence_snippets": snippets})
+	if err := h.Py.ChatStream(ctx, *pc, question, func(d string) {
+		send("delta", map[string]any{"text": d})
+	}); err != nil {
+		send("error", map[string]any{"message": err.Error()})
+	}
+	send("done", map[string]any{})
 }
 
 func (h *Handlers) PaperSummary(w http.ResponseWriter, r *http.Request) {
@@ -1082,12 +1255,12 @@ func (h *Handlers) PaperMindmap(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
-	mermaid, err := h.Py.Mindmap(ctx, *pc)
+	markdown, err := h.Py.Mindmap(ctx, *pc)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "mindmap: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"mermaid": mermaid})
+	writeJSON(w, http.StatusOK, map[string]any{"markdown": markdown})
 }
 
 func (h *Handlers) PaperRelated(w http.ResponseWriter, r *http.Request) {

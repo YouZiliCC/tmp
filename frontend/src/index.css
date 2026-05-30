@@ -411,8 +411,20 @@ body {
   font-weight: 600;
 }
 
-/* mermaid svg sizing */
-.mermaid-host svg {
+/* markmap 思维导图（暗色） */
+.markmap-svg {
   max-width: 100%;
-  height: auto;
+}
+.markmap-svg text {
+  fill: var(--text);
+}
+.markmap-svg .markmap-foreign,
+.markmap-svg .markmap-foreign * {
+  color: var(--text);
+  font-family: Sora, "Noto Sans SC", sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.markmap-svg .markmap-foreign a {
+  color: #4ecdc4;
 }

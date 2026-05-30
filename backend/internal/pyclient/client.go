@@ -1,6 +1,7 @@
 package pyclient
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -57,6 +58,77 @@ func (c *Client) postJSON(ctx context.Context, path string, payload any, out any
 		return fmt.Errorf("decode %s: %w body=%s", path, err, preview)
 	}
 	return nil
+}
+
+// StreamNDJSON POST 到 path 并逐行读取 NDJSON 流：
+//   {"delta":"..."} → 调 onDelta；{"done":true} → 结束；{"error":"..."} → 返回错误。
+// 供 review/qa/chat 的流式生成复用，Go 上层再封装为 SSE 发给浏览器。
+func (c *Client) StreamNDJSON(ctx context.Context, path string, payload any, onDelta func(string)) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal %s: %w", path, err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build request %s: %w", path, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return fmt.Errorf("call %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
+		return fmt.Errorf("py %s status=%d body=%s", path, resp.StatusCode, string(raw))
+	}
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024) // 容纳较长的单块增量
+	for sc.Scan() {
+		line := bytes.TrimSpace(sc.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var ev struct {
+			Delta string `json:"delta"`
+			Done  bool   `json:"done"`
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(line, &ev); err != nil {
+			continue
+		}
+		if ev.Error != "" {
+			return fmt.Errorf("py %s stream error: %s", path, ev.Error)
+		}
+		if ev.Done {
+			return nil
+		}
+		if ev.Delta != "" && onDelta != nil {
+			onDelta(ev.Delta)
+		}
+	}
+	return sc.Err()
+}
+
+// GenerateStream 流式生成文献综述。
+func (c *Client) GenerateStream(ctx context.Context, req GenerateRequest, onDelta func(string)) error {
+	return c.StreamNDJSON(ctx, "/generate_stream", req, onDelta)
+}
+
+// QAStream 流式生成智能问答回答。
+func (c *Client) QAStream(ctx context.Context, question string, papers []GeneratePaper, evidenceSufficient bool, onDelta func(string)) error {
+	req := map[string]any{
+		"question":            question,
+		"papers":              papers,
+		"evidence_sufficient": evidenceSufficient,
+	}
+	return c.StreamNDJSON(ctx, "/qa_stream", req, onDelta)
+}
+
+// ChatStream 流式生成单篇论文 AI 同读回答。
+func (c *Client) ChatStream(ctx context.Context, paper PaperContext, question string, onDelta func(string)) error {
+	req := map[string]any{"paper": paper, "question": question}
+	return c.StreamNDJSON(ctx, "/chat_stream", req, onDelta)
 }
 
 // Embed 调用 Python 服务获取嵌入向量。
@@ -176,16 +248,16 @@ func (c *Client) Summary(ctx context.Context, paper PaperContext) (*SummaryResul
 	return &resp, nil
 }
 
-// Mindmap 生成单篇论文的 mermaid mindmap 代码。
+// Mindmap 生成单篇论文的 markmap Markdown 大纲（前端渲染为真·思维导图）。
 func (c *Client) Mindmap(ctx context.Context, paper PaperContext) (string, error) {
 	req := map[string]any{"paper": paper}
 	var resp struct {
-		Mermaid string `json:"mermaid"`
+		Markdown string `json:"markdown"`
 	}
 	if err := c.postJSON(ctx, "/mindmap", req, &resp); err != nil {
 		return "", err
 	}
-	return resp.Mermaid, nil
+	return resp.Markdown, nil
 }
 
 // Chat 基于单篇论文上下文回答用户问题。

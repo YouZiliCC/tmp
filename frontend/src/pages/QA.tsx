@@ -1,7 +1,7 @@
 import { FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, HttpError } from "../api/client";
-import type { QaResponse } from "../api/types";
+import { api, HttpError, StreamHandlers } from "../api/client";
+import type { QaMeta, Reference } from "../api/types";
 import SectionTitle from "../components/SectionTitle";
 import Loading from "../components/Loading";
 import Markdown from "../components/Markdown";
@@ -12,15 +12,25 @@ export default function QA() {
   const [author, setAuthor] = useState("");
   const [year, setYear] = useState("");
   const [showFilters, setShowFilters] = useState(false);
+
+  const [answer, setAnswer] = useState("");
+  const [references, setReferences] = useState<Reference[]>([]);
+  const [evidenceSufficient, setEvidenceSufficient] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [streaming, setStreaming] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [resp, setResp] = useState<QaResponse | null>(null);
+  const [hasResult, setHasResult] = useState(false);
 
   async function run(e: FormEvent) {
     e.preventDefault();
     if (!question.trim()) return;
-    setLoading(true);
+    setAnswer("");
+    setReferences([]);
+    setEvidenceSufficient(true);
     setErr(null);
+    setLoading(true);
+    setStreaming(true);
+    setHasResult(true);
     try {
       const yn = year.trim() ? Number(year.trim()) : undefined;
       const filters =
@@ -30,12 +40,23 @@ export default function QA() {
               publish_year: yn && Number.isFinite(yn) ? yn : undefined,
             }
           : undefined;
-      setResp(await api.qaAnswer({ question: question.trim(), filters }));
+      const handlers: StreamHandlers<QaMeta> = {
+        onMeta: (m) => {
+          setReferences(m.references ?? []);
+          setEvidenceSufficient(m.evidence_sufficient ?? true);
+        },
+        onDelta: (t) => {
+          setLoading(false);
+          setAnswer((a) => a + t);
+        },
+        onError: (msg) => setErr(msg),
+      };
+      await api.qaAnswerStream({ question: question.trim(), filters }, handlers);
     } catch (e2) {
       setErr(e2 instanceof HttpError ? e2.message : String(e2));
-      setResp(null);
     } finally {
       setLoading(false);
+      setStreaming(false);
     }
   }
 
@@ -59,8 +80,8 @@ export default function QA() {
           className="input-term resize-y font-sans"
         />
         <div className="mt-3 flex flex-wrap items-center gap-3">
-          <button type="submit" className="btn-term btn-primary" disabled={loading || !question.trim()}>
-            {loading ? "answering…" : "▸ 提问"}
+          <button type="submit" className="btn-term btn-primary" disabled={streaming || !question.trim()}>
+            {streaming ? "answering…" : "▸ 提问"}
           </button>
           <button
             type="button"
@@ -91,9 +112,9 @@ export default function QA() {
         </div>
       )}
 
-      {resp && (
+      {hasResult && (
         <>
-          {!resp.evidence_sufficient && (
+          {!evidenceSufficient && (
             <div
               className="term-panel px-4 py-3 text-sm flex items-center gap-2"
               style={{ borderColor: "var(--red)", color: "var(--red)" }}
@@ -101,14 +122,17 @@ export default function QA() {
               <span className="mono">⚠</span> 检索到的相关文献较少，以下结论可信度有限。
             </div>
           )}
-          <section>
-            <SectionTitle>answer · 回答</SectionTitle>
-            <div className="term-panel p-5">
-              <Markdown source={resp.answer} />
-            </div>
-          </section>
+          {(answer || (streaming && !loading)) && (
+            <section>
+              <SectionTitle>answer · 回答</SectionTitle>
+              <div className="term-panel p-5">
+                <Markdown source={answer} />
+                {streaming && <span className="animate-pulse text-cyan">▍</span>}
+              </div>
+            </section>
+          )}
 
-          {resp.references?.length > 0 && (
+          {references.length > 0 && (
             <section>
               <SectionTitle>
                 <span>references · 参考文献表</span>
@@ -117,7 +141,7 @@ export default function QA() {
                 <table className="w-full text-sm border-collapse">
                   <thead>
                     <tr className="text-left">
-                      {["#", "标题", "作者", "年份", "命中", "分数", "证据"].map((h) => (
+                      {["#", "标题", "作者", "年份", "命中", "证据"].map((h) => (
                         <th
                           key={h}
                           className="mono text-[11px] uppercase tracking-wide text-text-3 px-3 py-2 border-b border-line-2 whitespace-nowrap"
@@ -128,7 +152,7 @@ export default function QA() {
                     </tr>
                   </thead>
                   <tbody>
-                    {resp.references.map((r) => (
+                    {references.map((r) => (
                       <ReferenceRow key={r.paper_id + r.rank} r={r} />
                     ))}
                   </tbody>
@@ -142,11 +166,7 @@ export default function QA() {
   );
 }
 
-function ReferenceRow({
-  r,
-}: {
-  r: QaResponse["references"][number];
-}) {
+function ReferenceRow({ r }: { r: Reference }) {
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -166,7 +186,6 @@ function ReferenceRow({
         <td className="px-3 py-2.5">
           <MatchChips matchedBy={r.matched_by} />
         </td>
-        <td className="px-3 py-2.5 mono tnum text-cyan">{r.score?.toFixed(2)}</td>
         <td className="px-3 py-2.5">
           {r.snippet ? (
             <button onClick={() => setOpen((v) => !v)} className="kicker text-cyan hover:text-text">
@@ -180,7 +199,7 @@ function ReferenceRow({
       {open && r.snippet && (
         <tr className="border-b border-line">
           <td />
-          <td colSpan={6} className="px-3 pb-3">
+          <td colSpan={5} className="px-3 pb-3">
             <p className="fade-in text-[13px] leading-relaxed text-text-2 border-l-2 border-line-2 pl-3 whitespace-pre-wrap">
               {r.snippet}
             </p>

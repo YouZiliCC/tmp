@@ -14,7 +14,7 @@ import traceback
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import analyze as analyze_mod
@@ -288,13 +288,66 @@ def rewrite(req: RewriteRequest) -> Dict[str, Any]:
 
 
 _GENERATE_SYSTEM = (
-    "你是严谨的学术研究助理，负责基于提供的核心文献生成文献综述/研究设计分析报告。\n"
-    "请遵守以下三条硬性规则：\n"
-    "规则 1：学术溯源。每一处引述、实验数据或结论句末必须标注对应的 [DOI:xxx] 锚点；若文献无 DOI 则使用 [PaperID:xxx]。\n"
-    "规则 2：零幻觉红线。只能基于提供的资料回答，若资料中无相关变量或数据，必须直接回答“无法得出结论”，严禁编造。\n"
-    "规则 3：结构化论证。使用总-分-总结构：先总述研究问题与核心结论；中段分条罗列自变量、因变量与中介路径的关联；末段总结研究局限与未来方向。\n"
-    "输出语言：简体中文，正文使用 Markdown，但禁止使用任何代码块。"
+    "你是学术文献综述撰写助手，基于提供的核心文献撰写一篇结构完整、跨学科通用的文献综述。\n"
+    "硬性规则：\n"
+    "规则 1（直接出正文）：直接输出综述正文本身。严禁任何开场白、寒暄或自我说明——"
+    "诸如「好的」「作为严谨的学术研究助理」「以下是」「我将」「根据您提供的文献」等都不得出现；"
+    "也严禁过程性旁白，诸如「以下分条阐述…」「接下来分析…」「综上所述，本综述将…」。\n"
+    "规则 2（学术溯源）：每一处引述、数据或结论句末必须标注来源锚点 [DOI:xxx]；"
+    "若文献无 DOI 则用 [PaperID:xxx]。\n"
+    "规则 3（零幻觉红线）：只能基于提供的文献资料，资料中没有的内容必须明说「现有文献未涉及」，严禁编造。\n"
+    "规则 4（通用结构）：用 Markdown 小标题组织（不要用代码块），采用以下跨学科通用框架，"
+    "不要强行套用「自变量/因变量/中介」等特定学科范式：\n"
+    "## 研究背景与综述范围\n"
+    "## 研究现状与主要观点（按主题、视角或流派归纳，而非逐篇罗列）\n"
+    "## 研究方法与数据（不同文献的方法、样本与数据来源的分布与异同）\n"
+    "## 争议、分歧与研究空白\n"
+    "## 趋势与未来展望\n"
+    "规则 5（语言风格）：简体中文，客观、概括、以归纳综合为主。"
 )
+
+
+# 模型偶尔仍会带出的开场白/寒暄标志词，作为 prompt 之外的防御性兜底。
+_PREAMBLE_MARKERS = (
+    "好的", "好的，", "作为", "以下是", "以下，", "我将", "我会",
+    "根据您", "根据你", "首先，我", "明白", "收到",
+)
+
+
+def _strip_preamble(text: str) -> str:
+    """剥离模型可能残留的开场白首段（保守：只删较短的、命中标志词的首行）。"""
+    s = (text or "").lstrip()
+    if not s:
+        return text or ""
+    nl = s.find("\n")
+    first_line = s if nl < 0 else s[:nl]
+    stripped = first_line.lstrip()
+    if len(stripped) <= 50 and any(stripped.startswith(m) for m in _PREAMBLE_MARKERS):
+        rest = s[nl + 1:].lstrip() if nl >= 0 else ""
+        if rest:
+            return rest
+    return s
+
+
+def _clean_stream(pieces):
+    """对流式增量做一次性开场白剥离：缓冲到首个换行或 80 字再统一处理。"""
+    buf = ""
+    started = False
+    for p in pieces:
+        if started:
+            yield p
+            continue
+        buf += p
+        if "\n" in buf or len(buf) >= 80:
+            cleaned = _strip_preamble(buf)
+            started = True
+            if cleaned:
+                yield cleaned
+            buf = ""
+    if not started:
+        cleaned = _strip_preamble(buf)
+        if cleaned:
+            yield cleaned
 
 
 def _build_context_stream(papers: List[GeneratePaper]) -> str:
@@ -321,6 +374,20 @@ def _build_context_stream(papers: List[GeneratePaper]) -> str:
     return "\n\n".join(parts)
 
 
+def _generate_messages(query: str, papers: List[GeneratePaper]) -> List[Dict[str, str]]:
+    context_stream = _build_context_stream(papers)
+    user_prompt = (
+        f"用户研究问题（综述主题）：{query}\n\n"
+        f"以下是检索系统返回的 Top {len(papers)} 篇核心文献，按相关性从高到低排序：\n\n"
+        f"{context_stream}\n\n"
+        "请基于以上文献撰写文献综述正文（直接从第一个小标题开始，不要任何开场白）。"
+    )
+    return [
+        {"role": "system", "content": _GENERATE_SYSTEM},
+        {"role": "user", "content": user_prompt},
+    ]
+
+
 @app.post("/generate")
 def generate(req: GenerateRequest) -> Dict[str, Any]:
     query = (req.query or "").strip()
@@ -341,17 +408,7 @@ def generate(req: GenerateRequest) -> Dict[str, Any]:
     except ValueError:
         temperature = 0.2
 
-    context_stream = _build_context_stream(papers)
-    user_prompt = (
-        f"用户研究问题：{query}\n\n"
-        f"以下是检索系统返回的 Top {len(papers)} 篇核心文献，按相关性从高到低排序：\n\n"
-        f"{context_stream}\n\n"
-        "请严格按系统规则生成学术分析。"
-    )
-    messages = [
-        {"role": "system", "content": _GENERATE_SYSTEM},
-        {"role": "user", "content": user_prompt},
-    ]
+    messages = _generate_messages(query, papers)
 
     try:
         answer = llm_mod.chat(
@@ -367,6 +424,7 @@ def generate(req: GenerateRequest) -> Dict[str, Any]:
             status_code=500,
             detail={"error": "generate_failed", "message": str(e)},
         )
+    answer = _strip_preamble(answer or "")
 
     citations: List[Dict[str, Any]] = []
     for p in papers:
@@ -431,6 +489,35 @@ def _call_chat(messages: List[Dict[str, str]], cfg: Dict[str, Any], error: str,
         raise HTTPException(status_code=500, detail={"error": error, "message": str(e)})
 
 
+def _ndjson_stream(messages: List[Dict[str, str]], cfg: Dict[str, Any],
+                   clean_preamble: bool = True) -> StreamingResponse:
+    """以 NDJSON 流式返回 LLM 增量：每行一个 JSON——
+
+    {"delta": "..."} 文本增量 / {"done": true} 结束 / {"error": "..."} 出错。
+    Go 后端逐行读取并重新封装为 SSE 发给浏览器。
+    """
+
+    def gen():
+        try:
+            pieces = llm_mod.chat_stream(
+                messages,
+                model=cfg["model"],
+                temperature=cfg["temperature"],
+                base_url=cfg["base_url"],
+                api_key=cfg["api_key"],
+            )
+            if clean_preamble:
+                pieces = _clean_stream(pieces)
+            for piece in pieces:
+                yield json.dumps({"delta": piece}, ensure_ascii=False) + "\n"
+            yield json.dumps({"done": True}) + "\n"
+        except Exception as e:  # noqa: BLE001
+            traceback.print_exc()
+            yield json.dumps({"error": str(e)}, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+
 # --- qa (T4 智能问答) ---
 
 
@@ -471,17 +558,11 @@ def _build_qa_context(papers: List[GeneratePaper]) -> str:
     return "\n\n".join(parts)
 
 
-@app.post("/qa")
-def qa(req: QaRequest) -> Dict[str, Any]:
-    question = (req.question or "").strip()
-    if not question:
-        raise HTTPException(status_code=400, detail={"error": "empty_question"})
-    cfg = _llm_config()
-    _require_llm(cfg)
-
-    context = _build_qa_context(req.papers or [])
+def _qa_messages(question: str, papers: List[GeneratePaper],
+                 evidence_sufficient: bool) -> List[Dict[str, str]]:
+    context = _build_qa_context(papers)
     prefix = ""
-    if not req.evidence_sufficient:
+    if not evidence_sufficient:
         prefix = "请注意：检索到的相关文献较少，请在回答开头加上一句“（注：检索到的相关文献较少，以下结论可信度有限）”。\n\n"
     user_prompt = (
         f"{prefix}"
@@ -490,12 +571,43 @@ def qa(req: QaRequest) -> Dict[str, Any]:
         f"{context}\n\n"
         "请基于以上证据直接回答用户问题。"
     )
-    messages = [
+    return [
         {"role": "system", "content": _QA_SYSTEM},
         {"role": "user", "content": user_prompt},
     ]
+
+
+@app.post("/qa")
+def qa(req: QaRequest) -> Dict[str, Any]:
+    question = (req.question or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail={"error": "empty_question"})
+    cfg = _llm_config()
+    _require_llm(cfg)
+
+    messages = _qa_messages(question, req.papers or [], req.evidence_sufficient)
     answer = _call_chat(messages, cfg, "qa_failed")
-    return {"answer": answer or ""}
+    return {"answer": _strip_preamble(answer or "")}
+
+
+@app.post("/generate_stream")
+def generate_stream(req: GenerateRequest) -> StreamingResponse:
+    query = (req.query or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail={"error": "empty_query"})
+    cfg = _llm_config()
+    _require_llm(cfg)
+    return _ndjson_stream(_generate_messages(query, req.papers or []), cfg)
+
+
+@app.post("/qa_stream")
+def qa_stream(req: QaRequest) -> StreamingResponse:
+    question = (req.question or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail={"error": "empty_question"})
+    cfg = _llm_config()
+    _require_llm(cfg)
+    return _ndjson_stream(_qa_messages(question, req.papers or [], req.evidence_sufficient), cfg)
 
 
 # --- summary (T5 ai 概要) ---
@@ -625,29 +737,32 @@ def summary(req: SummaryRequest) -> Dict[str, Any]:
 
 
 _MINDMAP_SYSTEM = (
-    "你是学术论文思维导图生成助手。请基于提供的论文，输出一段合法的 Mermaid mindmap 代码。\n"
+    "你是学术论文思维导图生成助手。请基于提供的论文，输出一段 Markdown 大纲，"
+    "供前端 markmap 渲染成可展开/收起的真·思维导图。\n"
     "硬性要求：\n"
-    "1. 只输出 mindmap 代码本身，第一行必须是 mindmap。\n"
-    "2. 不要输出任何 ``` 代码围栏，不要任何解释文字。\n"
-    "3. 根节点为论文主题，建议分支：研究背景、研究方法、数据、主要发现、结论、关键词。\n"
-    "4. 缩进表示层级，节点文本不要包含会破坏 mermaid 语法的特殊字符。"
+    "1. 只输出 Markdown 大纲本身，不要任何解释文字，不要使用 ``` 代码围栏。\n"
+    "2. 第一行是一级标题作为根节点：`# 论文主题`（取论文标题或其核心主题）。\n"
+    "3. 用二级标题 `## ` 作为主分支，建议包含：研究背景、研究方法、数据、主要发现、结论、关键词。\n"
+    "4. 每个分支下用 `- ` 列出 2-5 个要点，必要时用缩进的 `  - ` 表示子要点。\n"
+    "5. 节点文本简洁（约 20 字以内），不要在节点里塞整段话。"
 )
 
 
-def _strip_mermaid_fence(text: str) -> str:
+def _normalize_markmap(text: str, title: str) -> str:
+    """清洗模型输出为合法 markmap 大纲：去围栏、确保单一一级标题根节点。"""
     s = (text or "").strip()
     if s.startswith("```"):
         s = re.sub(r"^```[a-zA-Z]*\s*", "", s)
         s = re.sub(r"\s*```\s*$", "", s)
-        s = s.strip()
-    # 去掉残留的行内围栏
-    s = s.replace("```mermaid", "").replace("```", "").strip()
-    if not s.startswith("mindmap"):
-        idx = s.find("mindmap")
-        if idx >= 0:
-            s = s[idx:].strip()
-        else:
-            s = "mindmap\n" + s
+    s = s.replace("```", "").strip()
+    # 去掉可能残留的 mermaid/mindmap 关键字行
+    lines = [ln for ln in s.splitlines() if ln.strip().lower() not in ("mermaid", "mindmap")]
+    s = "\n".join(lines).strip()
+    if not s:
+        return f"# {title}"
+    first = s.splitlines()[0].strip()
+    if not re.match(r"^#\s+\S", first):
+        s = f"# {title}\n\n{s}"
     return s
 
 
@@ -664,18 +779,16 @@ def mindmap(req: SummaryRequest) -> Dict[str, Any]:
     user_prompt = (
         f"{_paper_header(p)}\n\n"
         f"论文全文：\n{body}\n\n"
-        "请输出该论文的 Mermaid mindmap 代码。"
+        "请输出该论文的 Markdown 大纲（供 markmap 渲染思维导图）。"
     )
     messages = [
         {"role": "system", "content": _MINDMAP_SYSTEM},
         {"role": "user", "content": user_prompt},
     ]
     content = _call_chat(messages, cfg, "mindmap_failed")
-    mermaid = _strip_mermaid_fence(content or "")
-    if not mermaid or mermaid == "mindmap":
-        title = p.title.strip() or p.paper_id or "论文"
-        mermaid = f"mindmap\n  root(({title}))"
-    return {"mermaid": mermaid}
+    title = p.title.strip() or p.paper_id or "论文"
+    markdown = _normalize_markmap(content or "", title)
+    return {"markdown": markdown}
 
 
 # --- chat (T5 ai 同读) ---
@@ -710,15 +823,7 @@ def _pick_snippets(full_text: str, question: str, max_n: int = 3) -> List[str]:
     return snippets
 
 
-@app.post("/chat")
-def chat_single(req: ChatPaperRequest) -> Dict[str, Any]:
-    p = req.paper
-    question = (req.question or "").strip()
-    if not question:
-        raise HTTPException(status_code=400, detail={"error": "empty_question"})
-    cfg = _llm_config()
-    _require_llm(cfg)
-
+def _chat_messages(p: PaperPayload, question: str) -> List[Dict[str, str]]:
     full_text = (p.full_text or "").strip()
     if len(full_text) > 8000:
         full_text = full_text[:8000] + "…"
@@ -731,13 +836,34 @@ def chat_single(req: ChatPaperRequest) -> Dict[str, Any]:
         f"用户问题：{question}\n\n"
         "请仅基于这篇论文作答。"
     )
-    messages = [
+    return [
         {"role": "system", "content": _CHAT_SYSTEM},
         {"role": "user", "content": user_prompt},
     ]
-    answer = _call_chat(messages, cfg, "chat_failed")
+
+
+@app.post("/chat")
+def chat_single(req: ChatPaperRequest) -> Dict[str, Any]:
+    p = req.paper
+    question = (req.question or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail={"error": "empty_question"})
+    cfg = _llm_config()
+    _require_llm(cfg)
+
+    answer = _call_chat(_chat_messages(p, question), cfg, "chat_failed")
     snippets = _pick_snippets(p.full_text or "", question)
-    return {"answer": answer or "", "evidence_snippets": snippets}
+    return {"answer": _strip_preamble(answer or ""), "evidence_snippets": snippets}
+
+
+@app.post("/chat_stream")
+def chat_stream(req: ChatPaperRequest) -> StreamingResponse:
+    question = (req.question or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail={"error": "empty_question"})
+    cfg = _llm_config()
+    _require_llm(cfg)
+    return _ndjson_stream(_chat_messages(req.paper, question), cfg)
 
 
 # --- analyze ---

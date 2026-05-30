@@ -19,12 +19,22 @@ export interface StatsResponse {
 }
 
 // ---------------- Search ----------------
+export type SearchField =
+  | "all"
+  | "theme"
+  | "title_or_keywords"
+  | "title"
+  | "first_author"
+  | "author"
+  | "affiliation"
+  | "keywords"
+  | "abstract"
+  | "doi";
+
 export interface TraditionalSearchRequest {
   q?: string;
-  author?: string;
+  field?: SearchField;
   year?: number;
-  journal?: string;
-  keywords?: string;
   page?: number;
   page_size?: number;
   sort?: "relevance" | "year";
@@ -39,6 +49,7 @@ export interface Hit {
   author: string;
   year: number;
   journal: string;
+  affiliation: string;
   abstract_preview: string;
   keywords: string;
 }
@@ -119,6 +130,7 @@ export interface Paper {
   author: string;
   publish_year: number;
   source_journal: string;
+  affiliation?: string;
   doi?: string;
   abstract: string;
   keywords: string;
@@ -198,6 +210,9 @@ export interface ReviewManualRequest {
   doi?: string;
   title?: string;
   text?: string;
+  author?: string;
+  year?: number;
+  journal?: string;
 }
 
 export interface ReviewMatched {
@@ -209,6 +224,21 @@ export interface ReviewResponse {
   answer: string;
   citations: Citation[];
   matched?: ReviewMatched | null;
+}
+
+// ---------------- 流式事件 meta 负载（SSE） ----------------
+export interface ReviewMeta {
+  citations: Citation[];
+  matched?: ReviewMatched | null;
+}
+
+export interface QaMeta {
+  evidence_sufficient: boolean;
+  references: Reference[];
+}
+
+export interface ChatMeta {
+  evidence_snippets: string[];
 }
 
 // ---------------- T5 · 论文详情智能体 ----------------
@@ -229,7 +259,7 @@ export interface SummaryResponse {
 }
 
 export interface MindmapResponse {
-  mermaid: string;
+  markdown: string;
 }
 
 export interface RelatedPaper {
