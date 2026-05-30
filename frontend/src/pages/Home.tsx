@@ -142,7 +142,7 @@ export default function Home() {
                       className="w-full max-w-[44px] border border-cyan"
                       style={{
                         height: `${(c / maxCount) * 100}%`,
-                        background: "rgba(78,205,196,0.12)",
+                        background: "rgba(var(--accent-rgb), 0.12)",
                       }}
                     />
                   </div>

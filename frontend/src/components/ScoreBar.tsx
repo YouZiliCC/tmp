@@ -15,7 +15,7 @@ export default function ScoreBar({ score, max = 1 }: Props) {
       <div className="flex-1 h-[3px] bg-bg-2 border border-line">
         <div
           className="h-full bg-cyan"
-          style={{ width: `${pct}%`, boxShadow: "0 0 8px rgba(78,205,196,0.5)" }}
+          style={{ width: `${pct}%`, boxShadow: "0 0 8px rgba(var(--accent-rgb), 0.45)" }}
         />
       </div>
     </div>

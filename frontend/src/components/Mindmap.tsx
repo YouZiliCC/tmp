@@ -17,6 +17,8 @@ export default function Mindmap({ markdown }: Props) {
   useEffect(() => {
     if (!svgRef.current) return;
     const { root } = transformer.transform(markdown?.trim() || "# 论文");
+    const accent =
+      getComputedStyle(document.documentElement).getPropertyValue("--cyan").trim() || "#0d9488";
     if (!mmRef.current) {
       mmRef.current = Markmap.create(
         svgRef.current,
@@ -25,7 +27,7 @@ export default function Mindmap({ markdown }: Props) {
           spacingVertical: 8,
           spacingHorizontal: 90,
           paddingX: 12,
-          color: () => "#4ecdc4",
+          color: () => accent,
           fitRatio: 0.95,
         },
         root

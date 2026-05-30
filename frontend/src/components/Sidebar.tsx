@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { api } from "../api/client";
+import ThemeToggle from "./ThemeToggle";
 
 interface NavItem {
   to: string;
@@ -119,6 +120,9 @@ export default function Sidebar() {
                 ? "backend online"
                 : "backend offline"}
           </span>
+        </div>
+        <div className="mt-3">
+          <ThemeToggle />
         </div>
       </div>
     </aside>

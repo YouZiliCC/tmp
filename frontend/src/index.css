@@ -3,6 +3,27 @@
 @tailwind utilities;
 
 :root {
+  /* light theme (default) */
+  --bg: #f4f6f9;
+  --bg-2: #eaedf2;
+  --bg-3: #ffffff;
+  --line: #dde2e9;
+  --line-2: #c6cdd8;
+  --text: #161b26;
+  --text-2: #4b5563;
+  --text-3: #8a94a3;
+  --cyan: #0d9488;
+  --amber: #b45309;
+  --violet: #5b54d6;
+  --green: #15935f;
+  --red: #cf392a;
+  --accent-rgb: 13, 148, 136;
+  --texture-line: rgba(0, 0, 0, 0.022);
+  --scroll-hover: #b8c0cc;
+}
+
+:root[data-theme="dark"] {
+  /* dark theme */
   --bg: #0b0e14;
   --bg-2: #11151f;
   --bg-3: #161b26;
@@ -16,6 +37,9 @@
   --violet: #7c7cf0;
   --green: #5bd9a6;
   --red: #e5604d;
+  --accent-rgb: 78, 205, 196;
+  --texture-line: rgba(255, 255, 255, 0.012);
+  --scroll-hover: #3a4452;
 }
 
 * {
@@ -32,13 +56,14 @@ body {
   margin: 0;
   background-color: var(--bg);
   color: var(--text);
+  transition: background-color 0.2s ease, color 0.2s ease;
   /* terminal / oscilloscope texture: dot grid + faint scanlines */
   background-image:
-    radial-gradient(rgba(78, 205, 196, 0.04) 1px, transparent 1px),
+    radial-gradient(rgba(var(--accent-rgb), 0.04) 1px, transparent 1px),
     repeating-linear-gradient(
       0deg,
-      rgba(255, 255, 255, 0.012) 0px,
-      rgba(255, 255, 255, 0.012) 1px,
+      var(--texture-line) 0px,
+      var(--texture-line) 1px,
       transparent 1px,
       transparent 3px
     );
@@ -49,7 +74,7 @@ body {
 }
 
 ::selection {
-  background: rgba(78, 205, 196, 0.25);
+  background: rgba(var(--accent-rgb), 0.25);
   color: var(--text);
 }
 
@@ -65,7 +90,7 @@ body {
   border: 2px solid var(--bg);
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #3a4452;
+  background: var(--scroll-hover);
 }
 
 /* ---------------- terminal utility classes ---------------- */
@@ -80,8 +105,8 @@ body {
   .term-panel-hover:hover {
     border-color: var(--cyan);
     box-shadow:
-      0 0 0 1px rgba(78, 205, 196, 0.25),
-      0 0 18px -6px rgba(78, 205, 196, 0.35);
+      0 0 0 1px rgba(var(--accent-rgb), 0.25),
+      0 0 18px -6px rgba(var(--accent-rgb), 0.35);
   }
 
   .kicker {
@@ -112,7 +137,7 @@ body {
     background: transparent;
   }
   .chip-cyan {
-    border-color: rgba(78, 205, 196, 0.5);
+    border-color: rgba(var(--accent-rgb), 0.5);
     color: var(--cyan);
   }
   .chip-amber {
@@ -134,8 +159,8 @@ body {
     outline: none;
     border-color: var(--cyan);
     box-shadow:
-      0 0 0 1px rgba(78, 205, 196, 0.4),
-      0 0 16px -6px rgba(78, 205, 196, 0.5);
+      0 0 0 1px rgba(var(--accent-rgb), 0.4),
+      0 0 16px -6px rgba(var(--accent-rgb), 0.5);
   }
 
   .input-term {
@@ -159,14 +184,14 @@ body {
   .btn-term:hover:not(:disabled) {
     border-color: var(--cyan);
     color: var(--cyan);
-    box-shadow: 0 0 14px -6px rgba(78, 205, 196, 0.6);
+    box-shadow: 0 0 14px -6px rgba(var(--accent-rgb), 0.6);
   }
   .btn-term:disabled {
     opacity: 0.4;
     cursor: not-allowed;
   }
   .btn-primary {
-    border-color: rgba(78, 205, 196, 0.6);
+    border-color: rgba(var(--accent-rgb), 0.6);
     color: var(--cyan);
   }
 
@@ -280,7 +305,7 @@ body {
   background: linear-gradient(
     90deg,
     transparent,
-    rgba(78, 205, 196, 0.12),
+    rgba(var(--accent-rgb), 0.12),
     transparent
   );
   transform: translateX(-100%);
@@ -332,7 +357,7 @@ body {
 .md a {
   color: var(--cyan);
   text-decoration: none;
-  border-bottom: 1px solid rgba(78, 205, 196, 0.4);
+  border-bottom: 1px solid rgba(var(--accent-rgb), 0.4);
 }
 .md ul,
 .md ol {
@@ -354,7 +379,7 @@ body {
   margin: 0.8em 0;
   padding: 0.2em 0 0.2em 1em;
   color: var(--text-2);
-  background: rgba(78, 205, 196, 0.04);
+  background: rgba(var(--accent-rgb), 0.04);
 }
 .md code {
   font-family: "IBM Plex Mono", monospace;
@@ -426,5 +451,5 @@ body {
   line-height: 1.4;
 }
 .markmap-svg .markmap-foreign a {
-  color: #4ecdc4;
+  color: var(--cyan);
 }
